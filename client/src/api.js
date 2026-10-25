@@ -1,10 +1,16 @@
 export const getToken = () => localStorage.getItem('token');
-export async function api(path, body) {
+export async function api(path, body, method) {
   const r = await fetch('/api' + path, {
-    method: body ? 'POST' : 'GET',
+    method: method || (body ? 'POST' : 'GET'),
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() },
     body: body ? JSON.stringify(body) : undefined });
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || 'Ошибка');
   return data;
+}
+export async function upload(blob) {
+  const r = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': blob.type, Authorization: 'Bearer ' + getToken() }, body: blob });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'Не удалось загрузить файл');
+  return d.url;
 }

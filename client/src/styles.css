@@ -31,3 +31,14 @@ header { display:flex; gap:10px; align-items:center; padding:10px 16px; backgrou
 .bubble { user-select:text; }
 .ctx { position:fixed; z-index:50; min-width:200px; padding:6px; border-radius:14px; background:var(--side); box-shadow:0 8px 30px #0006; display:grid; }
 .ctx button { background:none; color:var(--txt); text-align:left; border-radius:8px; padding:10px 12px; } .ctx button:hover { background:var(--line); } .ctx .danger { color:#e53935; }
+img.ava { object-fit:cover; } .icon { padding:8px 12px; font-size:18px; } .composer { align-items:center; } .grow { flex:1; }
+.dot { width:12px; height:12px; border-radius:50%; background:#e53935; animation:pulse 1s infinite alternate; } @keyframes pulse { to { opacity:.3; } }
+.emoji { display:grid; grid-template-columns:repeat(8,1fr); gap:2px; max-height:220px; overflow:auto; padding:8px; background:var(--side); border-top:1px solid var(--line); }
+.emoji button { background:none; font-size:22px; padding:4px; border-radius:8px; } .emoji button:hover { background:var(--line); }
+.modal-back { position:fixed; inset:0; background:#0008; display:grid; place-items:center; z-index:60; padding:12px; }
+.panel { width:min(400px,100%); max-height:100%; overflow:auto; background:var(--side); border-radius:16px; padding:20px; display:grid; gap:12px; }
+.panel h2 { margin:0; font-size:20px; } .panel label { display:grid; gap:4px; font-size:13px; color:var(--sub); } .panel small { color:var(--sub); } .panel .row { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.panel .checkrow { display:flex; gap:10px; align-items:center; color:var(--txt); font-size:15px; } .checkrow input { width:auto; }
+.avabtn { justify-items:center; cursor:pointer; } .avabtn .ava { width:96px; height:96px; font-size:36px; } .danger-t { color:#e53935; }
+.me { display:flex; gap:10px; align-items:center; cursor:pointer; } .me .ava { width:40px; height:40px; font-size:16px; } header .ava { width:40px; height:40px; font-size:16px; }
+audio { display:block; max-width:240px; height:36px; }

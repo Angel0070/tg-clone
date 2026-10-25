@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import { api, getToken, upload } from './api.js';
+import { api, getToken, upload, uploadFile } from './api.js';
 
 function Login({ onDone }) {
   const [login, setLogin] = useState(''); const [step, setStep] = useState(1);
@@ -55,6 +55,74 @@ function Settings({ me, onSave, onClose }) {
     </div></div>);
 }
 
+const URL_RE = /(https?:\/\/[^\s<]+)/;
+const Linkify = ({ text }) => text.split(URL_RE).map((p, i) => (i % 2
+  ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{p}</a> : p));
+const size = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' МБ' : Math.max(1, Math.round((n || 0) / 1024)) + ' КБ');
+const dd = (t) => new Date(t).toLocaleDateString('ru', { day: 'numeric', month: 'short', year: 'numeric' });
+const yrs = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'год' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'года' : 'лет');
+const bday = (d) => {
+  const [y, mo, da] = d.split('-').map(Number); if (!y) return '';
+  const now = new Date(); let age = now.getFullYear() - y;
+  if (now < new Date(now.getFullYear(), mo - 1, da)) age--;
+  return `${da} ${new Date(y, mo - 1, da).toLocaleDateString('ru', { month: 'long' })} (${age} ${yrs(age)})`;
+};
+const ext = (name) => (String(name || 'file').split('.').pop() || 'file').slice(0, 4);
+
+function Body({ m, onView }) {
+  const stop = (e) => e.stopPropagation();
+  return (<>
+    {m.kind === 'voice' && <audio controls preload="metadata" src={m.file_url} />}
+    {m.kind === 'image' && <img className="pic" src={m.file_url} alt="" onClick={(e) => { stop(e); onView(m); }} />}
+    {m.kind === 'video' && <video className="pic" controls preload="metadata" src={m.file_url} onClick={stop} />}
+    {m.kind === 'file' && <a className="file" href={m.file_url} download={m.file_name} onClick={stop}>
+      <span className="fi">{ext(m.file_name)}</span><span><b>{m.file_name}</b><small>{size(m.file_size)}</small></span></a>}
+    {m.text && <div><Linkify text={m.text} /></div>}
+  </>);
+}
+
+const TABS = [['media', 'Медиа'], ['files', 'Файлы'], ['links', 'Ссылки'], ['voice', 'Голос']];
+function Info({ chat, meId, onClose, onView, onOpenUser }) {
+  const [data, setData] = useState(null); const [tab, setTab] = useState('media'); const [items, setItems] = useState([]);
+  useEffect(() => { api(`/chats/${chat.id}/info`).then(setData); }, [chat.id]);
+  useEffect(() => { setItems([]); api(`/chats/${chat.id}/shared?type=${tab}`).then(setItems); }, [chat.id, tab]);
+  const u = data?.user;
+  const links = items.flatMap((m) => (m.text.match(/https?:\/\/[^\s<]+/g) || []).map((url) => ({ url, m })));
+  const host = (url) => { try { return new URL(url).hostname; } catch { return url; } };
+  return (
+    <div className="info">
+      <div className="ihead"><button className="ghost" onClick={onClose}>✕</button><b>Информация</b></div>
+      <div className="iscroll">
+        <div className="iprof"><Ava name={chat.name} url={u?.avatar || chat.avatar} /><div className="nm bignm">{chat.name}</div>
+          <div className="sub">{data?.type === 'group' ? `${data.members.length} участн.` : '@' + chat.username}</div></div>
+        {u && <div className="icard">
+          <div><b>{u.login}</b><small>{u.login.includes('@') ? 'Email' : 'Телефон'}</small></div>
+          {u.bio && <div><b>{u.bio}</b><small>О себе</small></div>}
+          {u.birthday && <div><b>{bday(u.birthday)}</b><small>День рождения</small></div>}
+          <div><b>@{u.username}</b><small>Имя пользователя</small></div></div>}
+        {data?.type === 'group' && <div className="icard">{data.members.map((x) => (
+          <div key={x.id} className="mrow" onClick={() => x.id !== meId && onOpenUser(x)}><Ava name={x.name} url={x.avatar} />
+            <div><b>{x.name}{x.id === meId ? ' (вы)' : ''}</b><small>@{x.username}</small></div></div>))}</div>}
+        <div className="tabs">{TABS.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
+        <div className="icard">
+          {tab === 'media' && <div className="grid">{items.map((m) => m.kind === 'image'
+            ? <img key={m.id} src={m.file_url} alt="" onClick={() => onView(m)} />
+            : <video key={m.id} src={m.file_url} preload="metadata" muted onClick={() => onView(m)} />)}</div>}
+          {tab === 'files' && items.map((m) => (
+            <a key={m.id} className="frow" href={m.file_url} download={m.file_name}><span className="fi">{ext(m.file_name)}</span>
+              <span><b>{m.file_name}</b><small>{size(m.file_size)} • {dd(m.created_at)}</small></span></a>))}
+          {tab === 'links' && links.map(({ url, m }, i) => (
+            <a key={i} className="frow" href={url} target="_blank" rel="noopener noreferrer"><span className="fi blue">{host(url)[0]}</span>
+              <span><b>{host(url)}</b><small>{url}</small></span></a>))}
+          {tab === 'voice' && items.map((m) => (
+            <div key={m.id} className="vrow"><div><b>{m.sender_id === meId ? 'Вы' : m.sender_name}</b><small>{dd(m.created_at)} · {fmt(m.duration)}</small></div>
+              <audio controls preload="none" src={m.file_url} /></div>))}
+          {!(tab === 'links' ? links.length : items.length) && <div className="sub">Пока ничего нет</div>}
+        </div>
+      </div>
+    </div>);
+}
+
 function Chat({ me, onMe }) {
   const [chats, setChats] = useState([]); const [active, setActive] = useState(null);
   const [msgs, setMsgs] = useState([]); const [text, setText] = useState('');
@@ -65,6 +133,7 @@ function Chat({ me, onMe }) {
   const [del, setDel] = useState(null); const [delAll, setDelAll] = useState(false);
   const [emoji, setEmoji] = useState(false); const [settings, setSettings] = useState(false);
   const [rec, setRec] = useState(false); const [secs, setSecs] = useState(0);
+  const [info, setInfo] = useState(false); const [viewer, setViewer] = useState(null);
   const sock = useRef(null); const activeRef = useRef(null); const endRef = useRef(null); const recRef = useRef(null);
   activeRef.current = active;
   const coarse = window.matchMedia('(pointer: coarse)').matches;
@@ -96,7 +165,7 @@ function Chat({ me, onMe }) {
       if (chatId === activeRef.current?.id) { setTyping(true); clearTimeout(t); t = setTimeout(() => setTyping(false), 2000); } });
     return () => s.disconnect();
   }, []);
-  useEffect(() => { setReply(null); setEditing(null); setText(''); setEmoji(false); if (active) api(`/chats/${active.id}/messages`).then(setMsgs); }, [active?.id]);
+  useEffect(() => { setReply(null); setEditing(null); setText(''); setEmoji(false); setInfo(false); if (active) api(`/chats/${active.id}/messages`).then(setMsgs); }, [active?.id]);
   useEffect(() => { endRef.current?.scrollIntoView(); }, [msgs]);
   useEffect(() => {
     if (!q.trim()) return setFound([]);
@@ -141,6 +210,16 @@ function Chat({ me, onMe }) {
     } catch { alert('Нет доступа к микрофону. Разрешите его в настройках браузера.'); }
   };
   const stopRec = (wantSend) => { const mr = recRef.current; if (!mr) return; mr.wantSend = wantSend; mr.stop(); recRef.current = null; setRec(false); if (wantSend) setReply(null); };
+  const attach = async (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f || !active) return;
+    try {
+      const d = await uploadFile(f);
+      const kind = f.type.startsWith('image/') ? 'image' : f.type.startsWith('video/') ? 'video' : 'file';
+      sock.current.emit('message', { chatId: active.id, kind, fileUrl: d.url, fileName: d.name, fileSize: d.size, text, replyTo: reply?.id });
+      setText(''); setReply(null);
+    } catch (x) { alert(x.message); }
+  };
   const confirmDelete = () => { sock.current.emit('delete', { id: del.id, forAll: delAll }); setDel(null); setDelAll(false); };
   const time = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const isGroup = active?.type === 'group';
@@ -175,21 +254,21 @@ function Chat({ me, onMe }) {
       </aside>
       <main>
         {active ? (<>
-          <header><button className="back" onClick={() => setActive(null)}>‹</button><Ava name={active.name} url={active.avatar} />
+          <header onClick={() => setInfo(true)}><button className="back" onClick={(e) => { e.stopPropagation(); setActive(null); }}>‹</button><Ava name={active.name} url={active.avatar} />
             <div><div className="nm">{active.name}</div>
               <div className="sub">{typing ? 'печатает…' : isGroup ? `${active.members_count} участн.` : '@' + active.username}</div></div></header>
           <div className="msgs">
             {msgs.map((m) => { const own = m.sender_id === me.id; return (
               <div key={m.id} className={'bubble ' + (own ? 'out' : 'in')} onContextMenu={(e) => openMenu(e, m)} onClick={(e) => coarse && openMenu(e, m)}>
                 {isGroup && !own && <div className="who">{m.sender_name}</div>}
-                {m.reply_to && <div className="quote"><b>{m.reply_name || ''}</b><div>{m.reply_name ? m.reply_text || 'Голосовое сообщение' : 'Сообщение удалено'}</div></div>}
-                {m.kind === 'voice' ? <audio controls preload="metadata" src={m.file_url} /> : m.text}
+                {m.reply_to && <div className="quote"><b>{m.reply_name || ''}</b><div>{m.reply_name ? m.reply_text : 'Сообщение удалено'}</div></div>}
+                <Body m={m} onView={setViewer} />
                 <span className="time">{m.edited ? 'изменено ' : ''}{m.kind === 'voice' ? fmt(m.duration) + ' · ' : ''}{time(m.created_at)}</span>
               </div>); })}
             <div ref={endRef} />
           </div>
           {(reply || editing) && (
-            <div className="strip"><div className="quote"><b>{editing ? 'Редактирование' : 'Ответ: ' + reply.sender_name}</b><div>{(editing || reply).text || 'Голосовое сообщение'}</div></div>
+            <div className="strip"><div className="quote"><b>{editing ? 'Редактирование' : 'Ответ: ' + reply.sender_name}</b><div>{(editing || reply).text || 'Вложение'}</div></div>
               <button className="ghost" onClick={() => { setReply(null); setEditing(null); setText(''); }}>✕</button></div>)}
           {emoji && <div className="emoji">{EMOJI.map((e) => <button key={e} onClick={() => setText((t) => t + e)}>{e}</button>)}</div>}
           {rec ? (
@@ -197,6 +276,7 @@ function Chat({ me, onMe }) {
               <button className="ghost" onClick={() => stopRec(false)}>Отмена</button><button onClick={() => stopRec(true)}>Отправить</button></div>
           ) : (
             <div className="composer">
+              <label className="ghost icon" title="Прикрепить файл">📎<input type="file" hidden onChange={attach} /></label>
               <button className="ghost icon" title="Эмодзи" onClick={() => setEmoji((v) => !v)}>😊</button>
               <input value={text} placeholder="Написать сообщение…"
                 onChange={(e) => { setText(e.target.value); sock.current.emit('typing', { chatId: active.id }); }}
@@ -209,8 +289,8 @@ function Chat({ me, onMe }) {
       {menu && (
         <div className="ctx" style={{ left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={() => { setReply(menu.m); setEditing(null); setMenu(null); }}>Ответить</button>
-          {menu.m.kind !== 'voice' && <button onClick={() => { navigator.clipboard?.writeText(menu.m.text); setMenu(null); }}>Копировать текст</button>}
-          {menu.m.sender_id === me.id && menu.m.kind !== 'voice' && <button onClick={() => { setEditing(menu.m); setReply(null); setText(menu.m.text); setMenu(null); }}>Изменить</button>}
+          {menu.m.text && <button onClick={() => { navigator.clipboard?.writeText(menu.m.text); setMenu(null); }}>Копировать текст</button>}
+          {menu.m.sender_id === me.id && menu.m.kind === 'text' && <button onClick={() => { setEditing(menu.m); setReply(null); setText(menu.m.text); setMenu(null); }}>Изменить</button>}
           <button className="danger" onClick={() => { setDel(menu.m); setDelAll(false); setMenu(null); }}>Удалить</button>
         </div>)}
       {del && (
@@ -220,6 +300,11 @@ function Chat({ me, onMe }) {
             {active.type === 'direct' ? `Также удалить для ${active.name}` : 'Удалить для всех'}</label>}
           <div className="row"><button className="ghost" onClick={() => setDel(null)}>Отмена</button><button className="ghost danger-t" onClick={confirmDelete}>Удалить</button></div>
         </div></div>)}
+      {info && active && <Info chat={active} meId={me.id} onClose={() => setInfo(false)} onView={setViewer} onOpenUser={(u) => { setInfo(false); openUser(u); }} />}
+      {viewer && (
+        <div className="modal-back" onClick={() => setViewer(null)}>
+          {viewer.kind === 'video' ? <video className="big" src={viewer.file_url} controls autoPlay onClick={(e) => e.stopPropagation()} /> : <img className="big" src={viewer.file_url} alt="" />}
+        </div>)}
       {settings && <Settings me={me} onSave={onMe} onClose={() => setSettings(false)} />}
     </div>);
 }

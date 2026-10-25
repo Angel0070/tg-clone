@@ -11,12 +11,12 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, chat_id INT, sender_
 `);
 
 db.exec('CREATE TABLE IF NOT EXISTS hidden(user_id INT, message_id INT, PRIMARY KEY(user_id, message_id))');
-for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
+for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
 for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
 
 const UP = path.resolve('uploads'); fs.mkdirSync(UP, { recursive: true });
 const app = express(); app.use(cors(), express.json());
-app.use('/uploads', express.static(UP));
+app.use('/uploads', (req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); }, express.static(UP));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const codes = new Map(); // login -> { code, exp }
@@ -69,15 +69,20 @@ app.patch('/api/me', auth, (req, res) => {
   res.json(getMe(req.uid));
 });
 
-const EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+const EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'application/pdf': 'pdf', 'application/zip': 'zip', 'text/plain': 'txt',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx' };
 app.post('/api/upload', auth, express.raw({ type: () => true, limit: '25mb' }), (req, res) => {
   const ext = EXT[String(req.headers['content-type'] || '').split(';')[0]];
   if (!ext || !Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Этот тип файла не поддерживается' });
-  const name = crypto.randomBytes(12).toString('hex') + '.' + ext;
-  fs.writeFileSync(path.join(UP, name), req.body);
-  res.json({ url: '/uploads/' + name });
+  let name = 'file.' + ext;
+  try { name = decodeURIComponent(String(req.headers['x-file-name'] || name)).slice(0, 120); } catch {}
+  const stored = crypto.randomBytes(12).toString('hex') + '.' + ext;
+  fs.writeFileSync(path.join(UP, stored), req.body);
+  res.json({ url: '/uploads/' + stored, name, size: req.body.length });
 });
-
 
 app.get('/api/users/search', auth, (req, res) => {
   const q = `%${String(req.query.q || '').replace(/^@/, '')}%`;
@@ -95,7 +100,7 @@ app.post('/api/chats/direct', auth, (req, res) => {
   res.json({ id });
 });
 
-const getMsg = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, r.text AS reply_text, ru.name AS reply_name
+const getMsg = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, CASE WHEN r.text!='' THEN r.text WHEN r.kind='voice' THEN 'Голосовое сообщение' WHEN r.kind='image' THEN 'Фото' WHEN r.kind='video' THEN 'Видео' ELSE 'Файл' END AS reply_text, ru.name AS reply_name
   FROM messages m JOIN users u ON u.id=m.sender_id
   LEFT JOIN messages r ON r.id=m.reply_to LEFT JOIN users ru ON ru.id=r.sender_id WHERE m.id=?`).get(id);
 const notify = (chatId, ev, payload) =>
@@ -119,7 +124,7 @@ app.get('/api/chats', auth, (req, res) => {
       CASE WHEN c.type='group' THEN NULL ELSE p.username END AS username,
       CASE WHEN c.type='group' THEN NULL ELSE p.avatar END AS avatar,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
-      (SELECT CASE WHEN kind='voice' THEN 'Голосовое сообщение' ELSE text END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
+      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
       COALESCE((SELECT created_at FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1), 0) AS last_at
     FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=?
     LEFT JOIN users p ON c.type='direct' AND p.id=(SELECT user_id FROM members WHERE chat_id=c.id AND user_id!=? LIMIT 1)
@@ -132,6 +137,22 @@ app.get('/api/chats/:id/messages', auth, (req, res) => {
   res.json(ids.reverse().map((r) => getMsg(r.id)));
 });
 
+app.get('/api/chats/:id/info', auth, (req, res) => {
+  const c = db.prepare('SELECT id,type,title FROM chats WHERE id=?').get(req.params.id);
+  if (!c || !isMember(c.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  if (c.type === 'group')
+    return res.json({ type: 'group', title: c.title, members: db.prepare('SELECT u.id,u.name,u.username,u.avatar FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?').all(c.id) });
+  res.json({ type: 'direct', user: db.prepare('SELECT u.id,u.name,u.username,u.avatar,u.bio,u.birthday,u.login FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND u.id!=?').get(c.id, req.uid) });
+});
+
+app.get('/api/chats/:id/shared', auth, (req, res) => {
+  if (!isMember(req.params.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const where = { media: "kind IN ('image','video')", files: "kind='file'", voice: "kind='voice'", links: "text LIKE '%http%'" }[req.query.type];
+  if (!where) return res.json([]);
+  const ids = db.prepare(`SELECT id FROM messages WHERE chat_id=? AND deleted=0 AND ${where} AND id NOT IN (SELECT message_id FROM hidden WHERE user_id=?) ORDER BY id DESC LIMIT 200`).all(req.params.id, req.uid);
+  res.json(ids.map((r) => getMsg(r.id)));
+});
+
 // --- Реалтайм ---
 io.use((s, next) => {
   try { s.uid = jwt.verify(s.handshake.auth.token, SECRET).id; next(); } catch { next(new Error('auth')); }
@@ -139,13 +160,15 @@ io.use((s, next) => {
 io.on('connection', (s) => {
   s.join('user:' + s.uid);
   const clean = (t) => String(t || '').trim().slice(0, 4000);
-  s.on('message', ({ chatId, text, replyTo, kind, fileUrl, duration }) => {
-    const voice = kind === 'voice' && /^\/uploads\/[a-f0-9]+\.(webm|ogg|m4a)$/.test(fileUrl || '');
-    text = voice ? '' : clean(text);
-    if ((!text && !voice) || !isMember(chatId, s.uid)) return;
+  const KIND_EXT = { voice: 'webm|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm', file: 'pdf|zip|txt|docx|xlsx|pptx' };
+  s.on('message', ({ chatId, text, replyTo, kind, fileUrl, fileName, fileSize, duration }) => {
+    const media = !!KIND_EXT[kind] && new RegExp(`^/uploads/[a-f0-9]+\\.(${KIND_EXT[kind]})$`).test(fileUrl || '');
+    text = media && kind === 'voice' ? '' : clean(text);
+    if ((!text && !media) || !isMember(chatId, s.uid)) return;
     const ok = replyTo && db.prepare('SELECT 1 FROM messages WHERE id=? AND chat_id=?').get(replyTo, chatId);
-    const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,duration) VALUES(?,?,?,?,?,?,?,?)')
-      .run(chatId, s.uid, text, Date.now(), ok ? replyTo : null, voice ? 'voice' : 'text', voice ? fileUrl : null, voice ? Math.min(Number(duration) || 0, 600) : 0).lastInsertRowid;
+    const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,file_name,file_size,duration) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(chatId, s.uid, text, Date.now(), ok ? replyTo : null, media ? kind : 'text', media ? fileUrl : null,
+        media ? String(fileName || '').slice(0, 120) : null, media ? Math.min(Number(fileSize) || 0, 26214400) : 0, media ? Math.min(Number(duration) || 0, 600) : 0).lastInsertRowid;
     notify(chatId, 'message', getMsg(id));
   });
   s.on('edit', ({ id, text }) => {

@@ -8,9 +8,11 @@ export async function api(path, body, method) {
   if (!r.ok) throw new Error(data.error || 'Ошибка');
   return data;
 }
-export async function upload(blob) {
-  const r = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': blob.type, Authorization: 'Bearer ' + getToken() }, body: blob });
+export async function uploadFile(file) {
+  const r = await fetch('/api/upload', { method: 'POST', body: file,
+    headers: { 'Content-Type': file.type || 'application/octet-stream', Authorization: 'Bearer ' + getToken(), 'X-File-Name': encodeURIComponent(file.name || 'file') } });
   const d = await r.json();
   if (!r.ok) throw new Error(d.error || 'Не удалось загрузить файл');
-  return d.url;
+  return d;
 }
+export const upload = async (blob) => (await uploadFile(blob)).url;

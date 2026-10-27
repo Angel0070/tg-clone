@@ -11,14 +11,16 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, chat_id INT, sender_
 `);
 
 db.exec('CREATE TABLE IF NOT EXISTS hidden(user_id INT, message_id INT, PRIMARY KEY(user_id, message_id))');
-for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
-for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
+for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0', 'waveform TEXT']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
+try { db.exec('ALTER TABLE members ADD COLUMN last_read INT DEFAULT 0'); } catch {}
+for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT', 'last_seen INT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
 
 const UP = path.resolve('uploads'); fs.mkdirSync(UP, { recursive: true });
 const app = express(); app.use(cors(), express.json());
 app.use('/uploads', (req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); }, express.static(UP));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
+const online = new Map(); // userId -> число открытых вкладок
 const codes = new Map(); // login -> { code, exp }
 
 const sign = (u) => jwt.sign({ id: u.id }, SECRET, { expiresIn: '30d' });
@@ -69,19 +71,33 @@ app.patch('/api/me', auth, (req, res) => {
   res.json(getMe(req.uid));
 });
 
+const MAX_UPLOAD = 100 * 1024 * 1024;
 const EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
-  'video/mp4': 'mp4', 'video/webm': 'webm', 'application/pdf': 'pdf', 'application/zip': 'zip', 'text/plain': 'txt',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'application/pdf': 'pdf', 'application/zip': 'zip', 'text/plain': 'txt',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx' };
-app.post('/api/upload', auth, express.raw({ type: () => true, limit: '25mb' }), (req, res) => {
+app.post('/api/upload', auth, (req, res) => {
   const ext = EXT[String(req.headers['content-type'] || '').split(';')[0]];
-  if (!ext || !Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Этот тип файла не поддерживается' });
+  const tooBig = `Файл слишком большой (максимум ${MAX_UPLOAD >> 20} МБ)`;
+  if (!ext) return res.status(400).json({ error: 'Этот тип файла не поддерживается' });
+  if (Number(req.headers['content-length']) > MAX_UPLOAD) return res.status(413).set('Connection', 'close').json({ error: tooBig });
   let name = 'file.' + ext;
   try { name = decodeURIComponent(String(req.headers['x-file-name'] || name)).slice(0, 120); } catch {}
   const stored = crypto.randomBytes(12).toString('hex') + '.' + ext;
-  fs.writeFileSync(path.join(UP, stored), req.body);
-  res.json({ url: '/uploads/' + stored, name, size: req.body.length });
+  const file = path.join(UP, stored);
+  const ws = fs.createWriteStream(file);
+  let size = 0, failed = false;
+  const fail = (code, error) => { if (failed) return; failed = true; ws.destroy(); fs.unlink(file, () => {}); if (!res.headersSent) res.status(code).set('Connection', 'close').json({ error }); };
+  req.on('data', (c) => { size += c.length; if (size > MAX_UPLOAD) { req.unpipe(ws); fail(413, tooBig); } });
+  req.on('error', () => fail(400, 'Загрузка прервана'));
+  ws.on('error', () => fail(500, 'Не удалось сохранить файл'));
+  ws.on('finish', () => {
+    if (failed) return;
+    if (!size) { fs.unlink(file, () => {}); return res.status(400).json({ error: 'Пустой файл' }); }
+    res.json({ url: '/uploads/' + stored, name, size });
+  });
+  req.pipe(ws);
 });
 
 app.get('/api/users/search', auth, (req, res) => {
@@ -123,12 +139,15 @@ app.get('/api/chats', auth, (req, res) => {
       CASE WHEN c.type='group' THEN c.title ELSE p.name END AS name,
       CASE WHEN c.type='group' THEN NULL ELSE p.username END AS username,
       CASE WHEN c.type='group' THEN NULL ELSE p.avatar END AS avatar,
+      CASE WHEN c.type='group' THEN NULL ELSE p.id END AS peer_id, p.last_seen AS last_seen,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
+      (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
+      (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
       (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
       COALESCE((SELECT created_at FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1), 0) AS last_at
     FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=?
     LEFT JOIN users p ON c.type='direct' AND p.id=(SELECT user_id FROM members WHERE chat_id=c.id AND user_id!=? LIMIT 1)
-    ORDER BY last_at DESC, c.id DESC`).all(req.uid, req.uid, req.uid, req.uid));
+    ORDER BY last_at DESC, c.id DESC`).all(...Array(6).fill(req.uid)).map((r) => ({ ...r, online: !!r.peer_id && online.has(r.peer_id) })));
 });
 
 app.get('/api/chats/:id/messages', auth, (req, res) => {
@@ -159,16 +178,33 @@ io.use((s, next) => {
 });
 io.on('connection', (s) => {
   s.join('user:' + s.uid);
+  online.set(s.uid, (online.get(s.uid) || 0) + 1);
+  if (online.get(s.uid) === 1) io.emit('presence', { userId: s.uid, online: true });
+  s.on('disconnect', () => {
+    const n = (online.get(s.uid) || 1) - 1;
+    if (n > 0) return online.set(s.uid, n);
+    online.delete(s.uid);
+    const lastSeen = Date.now();
+    db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(lastSeen, s.uid);
+    io.emit('presence', { userId: s.uid, online: false, lastSeen });
+  });
+  s.on('read', ({ chatId, upTo }) => {
+    upTo = Number(upTo);
+    if (!upTo || !isMember(chatId, s.uid)) return;
+    db.prepare('UPDATE members SET last_read=MAX(last_read, ?) WHERE chat_id=? AND user_id=?').run(upTo, chatId, s.uid);
+    notify(chatId, 'read', { chatId, userId: s.uid, upTo });
+  });
   const clean = (t) => String(t || '').trim().slice(0, 4000);
-  const KIND_EXT = { voice: 'webm|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm', file: 'pdf|zip|txt|docx|xlsx|pptx' };
-  s.on('message', ({ chatId, text, replyTo, kind, fileUrl, fileName, fileSize, duration }) => {
+  const KIND_EXT = { voice: 'webm|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm|mov', file: 'pdf|zip|txt|docx|xlsx|pptx' };
+  s.on('message', ({ chatId, text, replyTo, kind, fileUrl, fileName, fileSize, duration, waveform }) => {
     const media = !!KIND_EXT[kind] && new RegExp(`^/uploads/[a-f0-9]+\\.(${KIND_EXT[kind]})$`).test(fileUrl || '');
     text = media && kind === 'voice' ? '' : clean(text);
     if ((!text && !media) || !isMember(chatId, s.uid)) return;
     const ok = replyTo && db.prepare('SELECT 1 FROM messages WHERE id=? AND chat_id=?').get(replyTo, chatId);
-    const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,file_name,file_size,duration) VALUES(?,?,?,?,?,?,?,?,?,?)')
+    const wf = media && kind === 'voice' && /^\d{1,2}(,\d{1,2}){3,79}$/.test(waveform || '') ? waveform : null;
+    const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,file_name,file_size,duration,waveform) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
       .run(chatId, s.uid, text, Date.now(), ok ? replyTo : null, media ? kind : 'text', media ? fileUrl : null,
-        media ? String(fileName || '').slice(0, 120) : null, media ? Math.min(Number(fileSize) || 0, 26214400) : 0, media ? Math.min(Number(duration) || 0, 600) : 0).lastInsertRowid;
+        media ? String(fileName || '').slice(0, 120) : null, media ? Math.min(Number(fileSize) || 0, MAX_UPLOAD) : 0, media ? Math.min(Number(duration) || 0, 600) : 0, wf).lastInsertRowid;
     notify(chatId, 'message', getMsg(id));
   });
   s.on('edit', ({ id, text }) => {
@@ -194,6 +230,11 @@ io.on('connection', (s) => {
     db.prepare('SELECT user_id FROM members WHERE chat_id=? AND user_id!=?').all(chatId, s.uid)
       .forEach((m) => io.to('user:' + m.user_id).emit('typing', { chatId, userId: s.uid }));
   });
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.type === 'entity.too.large' ? 'Слишком большой запрос' : 'Ошибка сервера' });
 });
 
 server.listen(3001, () => console.log('Сервер: http://localhost:3001'));

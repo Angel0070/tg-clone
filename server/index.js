@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, chat_id INT, sender_
 db.exec('CREATE TABLE IF NOT EXISTS hidden(user_id INT, message_id INT, PRIMARY KEY(user_id, message_id))');
 for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0', 'waveform TEXT']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
 try { db.exec('ALTER TABLE members ADD COLUMN last_read INT DEFAULT 0'); } catch {}
+for (const col of ['username TEXT', 'description TEXT', 'owner_id INT']) { try { db.exec('ALTER TABLE chats ADD COLUMN ' + col); } catch {} }
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chats_username ON chats(username)');
+db.exec('CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY, user_id INT, text TEXT, created_at INTEGER)');
 for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT', 'last_seen INT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
 
 const UP = path.resolve('uploads'); fs.mkdirSync(UP, { recursive: true });
@@ -72,7 +75,7 @@ app.patch('/api/me', auth, (req, res) => {
 });
 
 const MAX_UPLOAD = 100 * 1024 * 1024;
-const EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
+const EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/flac': 'flac', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
   'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'application/pdf': 'pdf', 'application/zip': 'zip', 'text/plain': 'txt',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
@@ -127,7 +130,7 @@ app.post('/api/chats/group', auth, (req, res) => {
   const ids = [...new Set([req.uid, ...(req.body.userIds || []).map(Number)])]
     .filter((u) => db.prepare('SELECT 1 FROM users WHERE id=?').get(u));
   if (!title || ids.length < 2) return res.status(400).json({ error: 'Укажите название и добавьте хотя бы одного участника' });
-  const id = db.prepare("INSERT INTO chats(type,title) VALUES('group',?)").run(title).lastInsertRowid;
+  const id = db.prepare("INSERT INTO chats(type,title,owner_id) VALUES('group',?,?)").run(title, req.uid).lastInsertRowid;
   const add = db.prepare('INSERT INTO members VALUES(?,?)');
   ids.forEach((u) => { add.run(id, u); io.to('user:' + u).emit('chats'); });
   res.json({ id });
@@ -136,14 +139,14 @@ app.post('/api/chats/group', auth, (req, res) => {
 app.get('/api/chats', auth, (req, res) => {
   const vis = 'id NOT IN (SELECT message_id FROM hidden WHERE user_id=?)';
   res.json(db.prepare(`SELECT c.id, c.type,
-      CASE WHEN c.type='group' THEN c.title ELSE p.name END AS name,
-      CASE WHEN c.type='group' THEN NULL ELSE p.username END AS username,
-      CASE WHEN c.type='group' THEN NULL ELSE p.avatar END AS avatar,
-      CASE WHEN c.type='group' THEN NULL ELSE p.id END AS peer_id, p.last_seen AS last_seen,
+      CASE c.type WHEN 'direct' THEN p.name WHEN 'saved' THEN 'Избранное' ELSE c.title END AS name,
+      CASE c.type WHEN 'direct' THEN p.username WHEN 'channel' THEN c.username ELSE NULL END AS username,
+      CASE WHEN c.type='direct' THEN p.avatar END AS avatar,
+      CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, c.owner_id, c.description,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
       (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
       (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
-      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
+      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='audio' THEN 'Музыка' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
       COALESCE((SELECT created_at FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1), 0) AS last_at
     FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=?
     LEFT JOIN users p ON c.type='direct' AND p.id=(SELECT user_id FROM members WHERE chat_id=c.id AND user_id!=? LIMIT 1)
@@ -157,10 +160,13 @@ app.get('/api/chats/:id/messages', auth, (req, res) => {
 });
 
 app.get('/api/chats/:id/info', auth, (req, res) => {
-  const c = db.prepare('SELECT id,type,title FROM chats WHERE id=?').get(req.params.id);
+  const c = db.prepare('SELECT id,type,title,description,username,owner_id FROM chats WHERE id=?').get(req.params.id);
   if (!c || !isMember(c.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
   if (c.type === 'group')
     return res.json({ type: 'group', title: c.title, members: db.prepare('SELECT u.id,u.name,u.username,u.avatar FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?').all(c.id) });
+  if (c.type === 'channel') return res.json({ type: 'channel', title: c.title, description: c.description, username: c.username, owner_id: c.owner_id,
+    subscribers: db.prepare('SELECT COUNT(*) AS n FROM members WHERE chat_id=?').get(c.id).n });
+  if (c.type === 'saved') return res.json({ type: 'saved' });
   res.json({ type: 'direct', user: db.prepare('SELECT u.id,u.name,u.username,u.avatar,u.bio,u.birthday,u.login FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND u.id!=?').get(c.id, req.uid) });
 });
 
@@ -170,6 +176,67 @@ app.get('/api/chats/:id/shared', auth, (req, res) => {
   if (!where) return res.json([]);
   const ids = db.prepare(`SELECT id FROM messages WHERE chat_id=? AND deleted=0 AND ${where} AND id NOT IN (SELECT message_id FROM hidden WHERE user_id=?) ORDER BY id DESC LIMIT 200`).all(req.params.id, req.uid);
   res.json(ids.map((r) => getMsg(r.id)));
+});
+
+app.post('/api/chats/saved', auth, (req, res) => {
+  const f = db.prepare("SELECT c.id FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=? WHERE c.type='saved'").get(req.uid);
+  if (f) return res.json({ id: f.id });
+  const id = db.prepare("INSERT INTO chats(type,owner_id) VALUES('saved',?)").run(req.uid).lastInsertRowid;
+  db.prepare('INSERT INTO members(chat_id,user_id) VALUES(?,?)').run(id, req.uid);
+  res.json({ id });
+});
+
+app.post('/api/chats/channel', auth, (req, res) => {
+  const title = String(req.body.title || '').trim().slice(0, 64);
+  const description = String(req.body.description || '').trim().slice(0, 200);
+  const username = String(req.body.username || '').trim().toLowerCase().replace(/^@/, '');
+  if (!title) return res.status(400).json({ error: 'Укажите название канала' });
+  if (!/^[a-z][a-z0-9_]{4,31}$/.test(username)) return res.status(400).json({ error: 'Ссылка канала: от 5 символов, только a–z, 0–9 и _, начинается с буквы' });
+  if (db.prepare('SELECT 1 FROM chats WHERE username=?').get(username)) return res.status(400).json({ error: 'Эта ссылка уже занята' });
+  const id = db.prepare("INSERT INTO chats(type,title,description,username,owner_id) VALUES('channel',?,?,?,?)").run(title, description, username, req.uid).lastInsertRowid;
+  db.prepare('INSERT INTO members(chat_id,user_id) VALUES(?,?)').run(id, req.uid);
+  res.json({ id });
+});
+
+app.get('/api/channels/search', auth, (req, res) => {
+  const q = `%${String(req.query.q || '').replace(/^@/, '')}%`;
+  res.json(db.prepare(`SELECT c.id, c.title AS name, c.username, c.description, (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count
+    FROM chats c WHERE c.type='channel' AND (c.title LIKE ? OR c.username LIKE ?) LIMIT 20`).all(q, q));
+});
+
+app.post('/api/channels/:id/join', auth, (req, res) => {
+  const c = db.prepare("SELECT id FROM chats WHERE id=? AND type='channel'").get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Канал не найден' });
+  db.prepare('INSERT OR IGNORE INTO members(chat_id,user_id) VALUES(?,?)').run(c.id, req.uid);
+  io.to('user:' + req.uid).emit('chats');
+  res.json({ id: c.id });
+});
+
+app.post('/api/chats/:id/leave', auth, (req, res) => {
+  const c = db.prepare('SELECT id,type,owner_id FROM chats WHERE id=?').get(req.params.id);
+  if (!c || !isMember(c.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const others = db.prepare('SELECT user_id FROM members WHERE chat_id=? AND user_id!=?').all(c.id, req.uid);
+  if (c.type === 'saved' || (c.type === 'channel' && c.owner_id === req.uid) || !others.length) {
+    db.prepare('DELETE FROM messages WHERE chat_id=?').run(c.id);
+    db.prepare('DELETE FROM members WHERE chat_id=?').run(c.id);
+    db.prepare('DELETE FROM chats WHERE id=?').run(c.id);
+  } else db.prepare('DELETE FROM members WHERE chat_id=? AND user_id=?').run(c.id, req.uid);
+  [...others.map((m) => m.user_id), req.uid].forEach((u) => io.to('user:' + u).emit('chats'));
+  res.json({ ok: true });
+});
+
+app.get('/api/chats/:id/search', auth, (req, res) => {
+  if (!isMember(req.params.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const q = `%${String(req.query.q || '').trim()}%`;
+  const ids = db.prepare('SELECT id FROM messages WHERE chat_id=? AND deleted=0 AND text LIKE ? AND id NOT IN (SELECT message_id FROM hidden WHERE user_id=?) ORDER BY id DESC LIMIT 50').all(req.params.id, q, req.uid);
+  res.json(ids.map((r) => getMsg(r.id)));
+});
+
+app.post('/api/report', auth, (req, res) => {
+  const text = String(req.body.text || '').trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ error: 'Опишите проблему' });
+  db.prepare('INSERT INTO reports(user_id,text,created_at) VALUES(?,?,?)').run(req.uid, text, Date.now());
+  res.json({ ok: true });
 });
 
 // --- Реалтайм ---
@@ -195,11 +262,13 @@ io.on('connection', (s) => {
     notify(chatId, 'read', { chatId, userId: s.uid, upTo });
   });
   const clean = (t) => String(t || '').trim().slice(0, 4000);
-  const KIND_EXT = { voice: 'webm|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm|mov', file: 'pdf|zip|txt|docx|xlsx|pptx' };
+  const KIND_EXT = { voice: 'webm|ogg|m4a', audio: 'mp3|wav|flac|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm|mov', file: 'pdf|zip|txt|docx|xlsx|pptx' };
   s.on('message', ({ chatId, text, replyTo, kind, fileUrl, fileName, fileSize, duration, waveform }) => {
     const media = !!KIND_EXT[kind] && new RegExp(`^/uploads/[a-f0-9]+\\.(${KIND_EXT[kind]})$`).test(fileUrl || '');
     text = media && kind === 'voice' ? '' : clean(text);
     if ((!text && !media) || !isMember(chatId, s.uid)) return;
+    const ch = db.prepare('SELECT type, owner_id FROM chats WHERE id=?').get(chatId);
+    if (ch.type === 'channel' && ch.owner_id !== s.uid) return; // в канале пишет только владелец
     const ok = replyTo && db.prepare('SELECT 1 FROM messages WHERE id=? AND chat_id=?').get(replyTo, chatId);
     const wf = media && kind === 'voice' && /^\d{1,2}(,\d{1,2}){3,79}$/.test(waveform || '') ? waveform : null;
     const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,file_name,file_size,duration,waveform) VALUES(?,?,?,?,?,?,?,?,?,?,?)')

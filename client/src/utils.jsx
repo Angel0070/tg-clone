@@ -39,3 +39,7 @@ export const Linkify = ({ text }) => text.split(URL_RE).map((p, i) => (i % 2
   ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{p}</a> : <Emojify key={i} text={p} />));
 export const Ava = ({ name, url, online, icon }) => (
   <div className="avw">{url ? <img className="ava" src={url} alt="" /> : icon ? <div className="ava ico"><Icon n={icon} size={26} /></div> : <div className="ava">{(name || '?')[0]}</div>}{online && <i className="odot" />}</div>);
+export const twemojiUrl = (e) => {
+  const cps = Array.from(e).map((c) => c.codePointAt(0).toString(16));
+  return `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${(cps.includes('200d') ? cps : cps.filter((c) => c !== 'fe0f')).join('-')}.svg`;
+};

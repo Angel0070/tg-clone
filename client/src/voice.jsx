@@ -32,6 +32,8 @@ export function Body({ m, onView }) {
   const stop = (e) => e.stopPropagation();
   return (<>
     {m.kind === 'voice' && <Voice m={m} />}
+    {m.kind === 'sticker' && <img className="stk-img" src={m.file_url} alt="" draggable="false" />}
+    {m.kind === 'gif' && <video className="pic" src={m.file_url} autoPlay loop muted playsInline onClick={stop} />}
     {m.kind === 'audio' && <div className="music" onClick={stop}><span className="fi blue"><Icon n="music" size={22} /></span><div><b>{m.file_name}</b><audio controls preload="metadata" src={m.file_url} /></div></div>}
     {m.kind === 'image' && <img className="pic" src={m.file_url} alt="" onClick={(e) => { stop(e); onView(m); }} />}
     {m.kind === 'video' && <video className="pic" controls preload="metadata" src={m.file_url} onClick={stop} />}

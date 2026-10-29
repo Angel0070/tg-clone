@@ -13,8 +13,11 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, chat_id INT, sender_
 db.exec('CREATE TABLE IF NOT EXISTS hidden(user_id INT, message_id INT, PRIMARY KEY(user_id, message_id))');
 for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0', 'waveform TEXT']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
 try { db.exec('ALTER TABLE members ADD COLUMN last_read INT DEFAULT 0'); } catch {}
-for (const col of ['username TEXT', 'description TEXT', 'owner_id INT']) { try { db.exec('ALTER TABLE chats ADD COLUMN ' + col); } catch {} }
+for (const col of ['username TEXT', 'description TEXT', 'owner_id INT', 'ttl INT DEFAULT 0']) { try { db.exec('ALTER TABLE chats ADD COLUMN ' + col); } catch {} }
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chats_username ON chats(username)');
+db.exec('CREATE TABLE IF NOT EXISTS stickers(id INTEGER PRIMARY KEY, user_id INT, url TEXT, created_at INTEGER)');
+db.exec('CREATE TABLE IF NOT EXISTS contacts(owner_id INT, user_id INT, first_name TEXT, last_name TEXT, note TEXT, PRIMARY KEY(owner_id, user_id))');
+db.exec('CREATE TABLE IF NOT EXISTS blocks(user_id INT, blocked_id INT, PRIMARY KEY(user_id, blocked_id))');
 db.exec('CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY, user_id INT, text TEXT, created_at INTEGER)');
 for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT', 'last_seen INT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
 
@@ -119,7 +122,7 @@ app.post('/api/chats/direct', auth, (req, res) => {
   res.json({ id });
 });
 
-const getMsg = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, CASE WHEN r.text!='' THEN r.text WHEN r.kind='voice' THEN 'Голосовое сообщение' WHEN r.kind='image' THEN 'Фото' WHEN r.kind='video' THEN 'Видео' ELSE 'Файл' END AS reply_text, ru.name AS reply_name
+const getMsg = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, CASE WHEN r.text!='' THEN r.text WHEN r.kind='voice' THEN 'Голосовое сообщение' WHEN r.kind='sticker' THEN 'Стикер' WHEN r.kind='gif' THEN 'GIF' WHEN r.kind='image' THEN 'Фото' WHEN r.kind='video' THEN 'Видео' ELSE 'Файл' END AS reply_text, ru.name AS reply_name
   FROM messages m JOIN users u ON u.id=m.sender_id
   LEFT JOIN messages r ON r.id=m.reply_to LEFT JOIN users ru ON ru.id=r.sender_id WHERE m.id=?`).get(id);
 const notify = (chatId, ev, payload) =>
@@ -136,21 +139,30 @@ app.post('/api/chats/group', auth, (req, res) => {
   res.json({ id });
 });
 
+const decorate = (uid) => {
+  const cm = new Map(db.prepare('SELECT * FROM contacts WHERE owner_id=?').all(uid).map((c) => [c.user_id, c]));
+  const bl = new Set(db.prepare('SELECT blocked_id FROM blocks WHERE user_id=?').all(uid).map((b) => b.blocked_id));
+  return (r) => {
+    const c = cm.get(r.peer_id); const full = c ? `${c.first_name} ${c.last_name}`.trim() : '';
+    return { ...r, online: !!r.peer_id && online.has(r.peer_id), real_name: r.name, name: full || r.name,
+      first_name: c?.first_name || '', last_name: c?.last_name || '', note: c?.note || '', blocked: bl.has(r.peer_id) };
+  };
+};
 app.get('/api/chats', auth, (req, res) => {
   const vis = 'id NOT IN (SELECT message_id FROM hidden WHERE user_id=?)';
   res.json(db.prepare(`SELECT c.id, c.type,
       CASE c.type WHEN 'direct' THEN p.name WHEN 'saved' THEN 'Избранное' ELSE c.title END AS name,
       CASE c.type WHEN 'direct' THEN p.username WHEN 'channel' THEN c.username ELSE NULL END AS username,
       CASE WHEN c.type='direct' THEN p.avatar END AS avatar,
-      CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, c.owner_id, c.description,
+      CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, c.owner_id, c.description, c.ttl,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
       (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
       (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
-      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='audio' THEN 'Музыка' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
+      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='audio' THEN 'Музыка' WHEN kind='sticker' THEN 'Стикер' WHEN kind='gif' THEN 'GIF' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
       COALESCE((SELECT created_at FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1), 0) AS last_at
     FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=?
     LEFT JOIN users p ON c.type='direct' AND p.id=(SELECT user_id FROM members WHERE chat_id=c.id AND user_id!=? LIMIT 1)
-    ORDER BY last_at DESC, c.id DESC`).all(...Array(6).fill(req.uid)).map((r) => ({ ...r, online: !!r.peer_id && online.has(r.peer_id) })));
+    ORDER BY last_at DESC, c.id DESC`).all(...Array(6).fill(req.uid)).map(decorate(req.uid)));
 });
 
 app.get('/api/chats/:id/messages', auth, (req, res) => {
@@ -239,6 +251,62 @@ app.post('/api/report', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- стикеры, GIF, контакты, блокировки, автоудаление ----
+app.get('/api/stickers', auth, (req, res) => res.json(db.prepare('SELECT id,url FROM stickers WHERE user_id=? ORDER BY id DESC').all(req.uid)));
+app.post('/api/stickers', auth, (req, res) => {
+  const url = String(req.body.url || '');
+  if (!/^\/uploads\/[a-f0-9]+\.(png|webp|gif)$/.test(url)) return res.status(400).json({ error: 'Стикер: PNG, WebP или GIF' });
+  const id = db.prepare('INSERT INTO stickers(user_id,url,created_at) VALUES(?,?,?)').run(req.uid, url, Date.now()).lastInsertRowid;
+  res.json({ id, url });
+});
+app.delete('/api/stickers/:id', auth, (req, res) => { db.prepare('DELETE FROM stickers WHERE id=? AND user_id=?').run(req.params.id, req.uid); res.json({ ok: true }); });
+
+const GIPHY_KEY = process.env.GIPHY_KEY || 'dc6zaTOxFJmzC';
+app.get('/api/gifs', auth, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const url = `https://api.giphy.com/v1/gifs/${q ? 'search' : 'trending'}?api_key=${GIPHY_KEY}&limit=30&rating=pg-13&lang=ru${q ? '&q=' + encodeURIComponent(q) : ''}`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('giphy ' + r.status);
+    const d = await r.json();
+    res.json((d.data || []).map((g) => ({ id: g.id, mp4: g.images?.fixed_height?.mp4 })).filter((g) => g.mp4));
+  } catch { res.status(502).json({ error: 'GIF-сервис недоступен. Получите бесплатный ключ на developers.giphy.com и запустите сервер с GIPHY_KEY=ваш_ключ' }); }
+});
+
+app.put('/api/contacts/:uid', auth, (req, res) => {
+  const cut = (v, n) => String(v || '').trim().slice(0, n);
+  db.prepare(`INSERT INTO contacts(owner_id,user_id,first_name,last_name,note) VALUES(?,?,?,?,?)
+    ON CONFLICT(owner_id,user_id) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, note=excluded.note`)
+    .run(req.uid, Number(req.params.uid), cut(req.body.first_name, 64), cut(req.body.last_name, 64), cut(req.body.note, 128));
+  io.to('user:' + req.uid).emit('chats');
+  res.json({ ok: true });
+});
+app.post('/api/blocks/:uid', auth, (req, res) => {
+  db.prepare('INSERT OR IGNORE INTO blocks(user_id,blocked_id) VALUES(?,?)').run(req.uid, Number(req.params.uid));
+  io.to('user:' + req.uid).emit('chats'); res.json({ ok: true });
+});
+app.delete('/api/blocks/:uid', auth, (req, res) => {
+  db.prepare('DELETE FROM blocks WHERE user_id=? AND blocked_id=?').run(req.uid, Number(req.params.uid));
+  io.to('user:' + req.uid).emit('chats'); res.json({ ok: true });
+});
+
+app.post('/api/chats/:id/ttl', auth, (req, res) => {
+  const c = db.prepare('SELECT id,type,owner_id FROM chats WHERE id=?').get(req.params.id);
+  if (!c || !isMember(c.id, req.uid) || (c.type === 'channel' && c.owner_id !== req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const ttl = Math.max(0, Math.min(Number(req.body.ttl) || 0, 365 * 864e5));
+  db.prepare('UPDATE chats SET ttl=? WHERE id=?').run(ttl, c.id);
+  db.prepare('SELECT user_id FROM members WHERE chat_id=?').all(c.id).forEach((m) => io.to('user:' + m.user_id).emit('chats'));
+  res.json({ ttl });
+});
+setInterval(() => { // автоудаление старых сообщений
+  for (const c of db.prepare('SELECT id,ttl FROM chats WHERE ttl>0').all()) {
+    for (const m of db.prepare('SELECT id FROM messages WHERE chat_id=? AND created_at<?').all(c.id, Date.now() - c.ttl)) {
+      db.prepare('DELETE FROM messages WHERE id=?').run(m.id);
+      notify(c.id, 'message:delete', { id: m.id, chat_id: c.id });
+    }
+  }
+}, 30000);
+
 // --- Реалтайм ---
 io.use((s, next) => {
   try { s.uid = jwt.verify(s.handshake.auth.token, SECRET).id; next(); } catch { next(new Error('auth')); }
@@ -264,11 +332,20 @@ io.on('connection', (s) => {
   const clean = (t) => String(t || '').trim().slice(0, 4000);
   const KIND_EXT = { voice: 'webm|ogg|m4a', audio: 'mp3|wav|flac|ogg|m4a', image: 'png|jpg|webp|gif', video: 'mp4|webm|mov', file: 'pdf|zip|txt|docx|xlsx|pptx' };
   s.on('message', ({ chatId, text, replyTo, kind, fileUrl, fileName, fileSize, duration, waveform }) => {
-    const media = !!KIND_EXT[kind] && new RegExp(`^/uploads/[a-f0-9]+\\.(${KIND_EXT[kind]})$`).test(fileUrl || '');
-    text = media && kind === 'voice' ? '' : clean(text);
+    const okUrl = (k, u) => (k === 'sticker'
+      ? /^\/uploads\/[a-f0-9]+\.(png|webp|gif)$/.test(u) || /^https:\/\/cdn\.jsdelivr\.net\/gh\/twitter\/twemoji@[\d.]+\/assets\/svg\/[0-9a-f-]+\.svg$/.test(u)
+      : k === 'gif' ? /^https:\/\/media\d*\.giphy\.com\/.+\.mp4(\?.*)?$/.test(u)
+      : !!KIND_EXT[k] && new RegExp(`^/uploads/[a-f0-9]+\\.(${KIND_EXT[k]})$`).test(u));
+    const media = okUrl(kind, fileUrl || '');
+    text = media && ['voice', 'sticker', 'gif'].includes(kind) ? '' : clean(text);
     if ((!text && !media) || !isMember(chatId, s.uid)) return;
     const ch = db.prepare('SELECT type, owner_id FROM chats WHERE id=?').get(chatId);
     if (ch.type === 'channel' && ch.owner_id !== s.uid) return; // в канале пишет только владелец
+    if (ch.type === 'direct') {
+      const peer = db.prepare('SELECT user_id FROM members WHERE chat_id=? AND user_id!=?').get(chatId, s.uid);
+      if (peer && db.prepare('SELECT 1 FROM blocks WHERE (user_id=? AND blocked_id=?) OR (user_id=? AND blocked_id=?)').get(s.uid, peer.user_id, peer.user_id, s.uid))
+        return s.emit('notice', 'Сообщение не доставлено: пользователь заблокирован');
+    }
     const ok = replyTo && db.prepare('SELECT 1 FROM messages WHERE id=? AND chat_id=?').get(replyTo, chatId);
     const wf = media && kind === 'voice' && /^\d{1,2}(,\d{1,2}){3,79}$/.test(waveform || '') ? waveform : null;
     const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,reply_to,kind,file_url,file_name,file_size,duration,waveform) VALUES(?,?,?,?,?,?,?,?,?,?,?)')

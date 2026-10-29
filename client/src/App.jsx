@@ -9,7 +9,8 @@ import { Info } from './info.jsx';
 import { EditProfile } from './editprofile.jsx';
 import EmojiPicker from './EmojiPicker.jsx';
 import SettingsPanel from './SettingsPanel.jsx';
-import { prefs, savePref, beep } from './prefs.js';
+import { prefs, savePref, beep, isMuted, setMute } from './prefs.js';
+import { ContactEdit } from './ContactEdit.jsx';
 
 const TABS = [['all', 'Все'], ['direct', 'Личные'], ['group', 'Группы'], ['channel', 'Каналы']];
 const inTab = (c, f) => f === 'all' || (f === 'direct' ? c.type === 'direct' || c.type === 'saved' : c.type === f);
@@ -32,6 +33,8 @@ function Chat({ me, onMe }) {
   const [form, setForm] = useState({ title: '', description: '', username: '', text: '' });
   const [cq, setCq] = useState(''); const [cres, setCres] = useState([]);
   const [, bump] = useReducer((x) => x + 1, 0);
+  const [sel, setSel] = useState(null); const [subm, setSubm] = useState(null); const [side, setSide] = useState(null);
+  const [gone, setGone] = useState([]); const [fresh, setFresh] = useState([]);
   const sock = useRef(null); const activeRef = useRef(null); const msgsRef = useRef([]); const endRef = useRef(null); const recRef = useRef(null);
   const mediaIn = useRef(null); const fileIn = useRef(null); const audioIn = useRef(null);
   activeRef.current = active; msgsRef.current = msgs;
@@ -47,7 +50,7 @@ function Chat({ me, onMe }) {
     const last = msgsRef.current.reduce((x, m) => Math.max(x, m.id), 0);
     if (last) sock.current?.emit('read', { chatId: a.id, upTo: last });
   };
-  const closeAll = () => { setMenu(null); setPop(null); setMore(false); };
+  const closeAll = () => { setMenu(null); setPop(null); setMore(false); setSubm(null); };
 
   useEffect(() => {
     const close = (e) => { if (e.type === 'click' || e.key === 'Escape') closeAll(); };
@@ -64,8 +67,8 @@ function Chat({ me, onMe }) {
     loadChats();
     const s = io({ auth: { token: getToken() } }); sock.current = s;
     s.on('message', (m) => {
-      if (m.chat_id === activeRef.current?.id) setMsgs((x) => [...x, m]);
-      if (m.sender_id !== me.id && !prefs.muted.includes(m.chat_id)) {
+      if (m.chat_id === activeRef.current?.id) { setMsgs((x) => [...x, m]); setFresh((f) => [...f.slice(-30), m.id]); }
+      if (m.sender_id !== me.id && !isMuted(m.chat_id)) {
         const away = document.visibilityState !== 'visible';
         if ((away || m.chat_id !== activeRef.current?.id) && prefs.sound) beep();
         if (away && prefs.notify && window.Notification?.permission === 'granted') new Notification(m.sender_name, { body: m.text || 'Вложение' });
@@ -73,7 +76,11 @@ function Chat({ me, onMe }) {
       loadChats();
     });
     s.on('message:update', (m) => { setMsgs((x) => x.map((y) => (y.id === m.id ? m : y))); loadChats(); });
-    s.on('message:delete', ({ id }) => { setMsgs((x) => x.filter((y) => y.id !== id)); loadChats(); });
+    s.on('message:delete', ({ id }) => {
+      setGone((g) => [...g, id]);
+      setTimeout(() => { setMsgs((x) => x.filter((y) => y.id !== id)); setGone((g) => g.filter((x) => x !== id)); loadChats(); }, 260);
+    });
+    s.on('notice', (t) => alert(t));
     s.on('presence', ({ userId, online, lastSeen }) => setPresence((p) => ({ ...p, [userId]: { online, lastSeen: lastSeen || p[userId]?.lastSeen } })));
     s.on('read', loadChats); s.on('chats', loadChats);
     let t; s.on('typing', ({ chatId }) => {
@@ -81,7 +88,7 @@ function Chat({ me, onMe }) {
     return () => s.disconnect();
   }, []);
   useEffect(() => {
-    setReply(null); setEditing(null); setText(''); setEmoji(false); setInfo(false); setMsearch(null); setMsgs([]);
+    setReply(null); setEditing(null); setText(''); setEmoji(false); setInfo(false); setMsearch(null); setMsgs([]); setSel(null); setSide(null); setSubm(null);
     if (active) api(`/chats/${active.id}/messages`).then(setMsgs);
   }, [active?.id]);
   useEffect(() => { endRef.current?.scrollIntoView(); markRead(); }, [msgs]);
@@ -120,11 +127,15 @@ function Chat({ me, onMe }) {
     catch (e) { setErr(e.message); }
   };
   const sendReport = async () => { setErr(''); try { await api('/report', { text: form.text }); setModal(null); setForm({ ...form, text: '' }); alert('Спасибо! Сообщение отправлено.'); } catch (e) { setErr(e.message); } };
-  const toggleMute = (id) => { savePref('muted', prefs.muted.includes(id) ? prefs.muted.filter((x) => x !== id) : [...prefs.muted, id]); bump(); };
+  const toggleMute = (id) => { setMute(id, isMuted(id) ? 0 : Infinity); bump(); };
   const leave = async (label) => {
     if (!confirm(label + '?')) return;
     await api(`/chats/${active.id}/leave`, {}); setActive(null); loadChats();
   };
+  const sendMedia = (kind, url) => { if (!cur) return; sock.current.emit('message', { chatId: cur.id, kind, fileUrl: url, replyTo: reply?.id }); setReply(null); setEmoji(false); };
+  const setTtl = async (ttl) => { await api(`/chats/${cur.id}/ttl`, { ttl }); setPop(null); setSubm(null); loadChats(); };
+  const customTtl = () => { const h = Number(prompt('Через сколько часов удалять сообщения?', '12')); if (h > 0) setTtl(Math.round(h * 36e5)); };
+  const toggleBlock = async () => { await api('/blocks/' + cur.peer_id, {}, cur.blocked ? 'DELETE' : 'POST'); setPop(null); loadChats(); };
   const send = () => {
     if (!text.trim() || !active) return;
     if (editing) sock.current.emit('edit', { id: editing.id, text });
@@ -169,7 +180,7 @@ function Chat({ me, onMe }) {
     } catch { alert('Нет доступа к микрофону. Разрешите его в настройках браузера.'); }
   };
   const stopRec = (wantSend) => { const mr = recRef.current; if (!mr) return; mr.wantSend = wantSend; mr.stop(); recRef.current = null; setRec(false); if (wantSend) setReply(null); };
-  const confirmDelete = () => { sock.current.emit('delete', { id: del.id, forAll: delAll }); setDel(null); setDelAll(false); };
+  const confirmDelete = () => { del.forEach((m) => sock.current.emit('delete', { id: m.id, forAll: delAll })); setDel(null); setDelAll(false); setSel(null); };
   const jump = (m) => {
     setMsearch(null);
     setTimeout(() => {
@@ -182,13 +193,13 @@ function Chat({ me, onMe }) {
     e.preventDefault(); e.stopPropagation(); setPop(null);
     setMenu({ m, x: Math.max(8, Math.min(e.clientX, window.innerWidth - 230)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 220)) });
   };
-  const tog = (name) => (e) => { e.stopPropagation(); setMenu(null); setMore(false); setPop(pop === name ? null : name); };
+  const tog = (name) => (e) => { e.stopPropagation(); setMenu(null); setMore(false); setSubm(null); setPop(pop === name ? null : name); };
 
   const cur = active && (chats.find((c) => c.id === active.id) || active);
   const isGroup = cur?.type === 'group'; const isChannel = cur?.type === 'channel';
   const canPost = cur && (!isChannel || cur.owner_id === me.id);
-  const muted = cur && prefs.muted.includes(cur.id);
-  const canAll = del && (del.sender_id === me.id || cur.type === 'direct');
+  const muted = cur && isMuted(cur.id);
+  const canAll = del && del.every((m) => m.sender_id === me.id || cur.type === 'direct');
   const peerRead = cur?.peer_read || 0;
   const status = typing ? 'печатает…' : isGroup ? `${cur?.members_count} участн.` : isChannel ? `${cur?.members_count} подписчиков` : cur?.type === 'saved' ? 'Ваши заметки' : seen(presence[cur?.peer_id]);
   const myChannel = chats.find((c) => c.type === 'channel' && c.owner_id === me.id);
@@ -246,9 +257,9 @@ function Chat({ me, onMe }) {
                 <Ava name={c.name} url={c.avatar} icon={chatIcon(c)} online={presence[c.peer_id]?.online} />
                 <div className="meta">
                   <div className="line"><span className="nm">{c.type === 'channel' && <Icon n="megaphone" size={15} />}{c.type === 'group' && <Icon n="users" size={15} />}{c.name}</span>
-                    {prefs.muted.includes(c.id) && <Icon n="volumeoff" size={14} />}<span className="tl">{listTime(c.last_at)}</span></div>
+                    {isMuted(c.id) && <Icon n="volumeoff" size={14} />}<span className="tl">{listTime(c.last_at)}</span></div>
                   <div className="line"><span className="sub">{c.last_text || 'Нет сообщений'}</span>
-                    {c.unread > 0 && active?.id !== c.id && <span className={'badge' + (prefs.muted.includes(c.id) ? ' mute' : '')}>{c.unread}</span>}</div>
+                    {c.unread > 0 && active?.id !== c.id && <span className={'badge' + (isMuted(c.id) ? ' mute' : '')}>{c.unread}</span>}</div>
                 </div></div>))
             : <div className="empty">{chats.length ? 'В этой папке пусто' : 'Найдите собеседника через поиск или создайте группу и канал кнопкой с карандашом'}</div>}
           </div>
@@ -267,8 +278,13 @@ function Chat({ me, onMe }) {
 
       <main>
         {cur ? (<>
-          <header onClick={() => !msearch && setInfo(true)}>
-            {msearch ? (<>
+          <header onClick={() => !msearch && !sel && setInfo(true)}>
+            {sel ? (<>
+              <button className="ib" title="Отмена" onClick={(e) => { e.stopPropagation(); setSel(null); }}><Icon n="close" /></button>
+              <b className="selcount">Выбрано: {sel.length}</b><span className="grow" />
+              <button className="ib" title="Копировать" disabled={!sel.length} onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(msgs.filter((m) => sel.includes(m.id) && m.text).map((m) => m.text).join('\n')); setSel(null); }}><Icon n="copy" /></button>
+              <button className="ib" title="Удалить" disabled={!sel.length} onClick={(e) => { e.stopPropagation(); setDel(msgs.filter((m) => sel.includes(m.id))); setDelAll(false); }}><Icon n="trash" /></button>
+            </>) : msearch ? (<>
               <button className="ib" onClick={(e) => { e.stopPropagation(); setMsearch(null); }}><Icon n="back" /></button>
               <input className="hsearch" autoFocus placeholder="Поиск сообщений" value={msearch.q} onClick={(e) => e.stopPropagation()} onChange={(e) => setMsearch({ q: e.target.value, res: [] })} />
             </>) : (<>
@@ -281,7 +297,19 @@ function Chat({ me, onMe }) {
                 <button className="ib" title="Ещё" onClick={tog('kebab')}><Icon n="more" /></button>
                 {pop === 'kebab' && (
                   <div className="pop right" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => { toggleMute(cur.id); setPop(null); }}><Icon n={muted ? 'volume' : 'volumeoff'} size={20} />{muted ? 'Включить звук' : 'Убрать звук'}</button>
+                    {cur.type === 'direct' && <button onClick={() => { setSide('contact'); setPop(null); }}><Icon n="edit" size={20} />Изменить</button>}
+                    {muted
+                      ? <button onClick={() => { setMute(cur.id, 0); bump(); setPop(null); }}><Icon n="volume" size={20} />Включить звук</button>
+                      : <div className="itemwrap"><button onClick={() => setSubm(subm === 'mute' ? null : 'mute')}><Icon n="volumeoff" size={20} />Убрать звук…<span className="grow" /><Icon n="chev" size={18} /></button>
+                        {subm === 'mute' && <div className="pop sub3">{[['1 час', 36e5], ['8 часов', 288e5], ['2 дня', 1728e5], ['Навсегда', Infinity]].map(([l, ms]) => (
+                          <button key={l} onClick={() => { setMute(cur.id, ms); bump(); setPop(null); }}>{l}</button>))}</div>}</div>}
+                    <div className="itemwrap"><button onClick={() => setSubm(subm === 'ttl' ? null : 'ttl')}><Icon n="clock" size={20} />Автоудаление<span className="grow" /><Icon n="chev" size={18} /></button>
+                      {subm === 'ttl' && <div className="pop sub3">{[['Никогда', 0], ['1 день', 864e5], ['1 неделя', 6048e5], ['1 месяц', 2592e6]].map(([l, v]) => (
+                        <button key={l} onClick={() => setTtl(v)}>{(cur.ttl || 0) === v ? <Icon n="check" size={18} /> : <span className="sp" />}{l}</button>))}
+                        <button onClick={customTtl}><Icon n="sliders" size={18} />Выбрать другой срок</button></div>}</div>
+                    <button onClick={() => { setSel([]); setPop(null); }}><Icon n="checkc" size={20} />Выбрать сообщения</button>
+                    {cur.type === 'direct' && <button onClick={toggleBlock}><Icon n="block" size={20} />{cur.blocked ? 'Разблокировать' : 'Заблокировать'}</button>}
+                    <div className="sep" />
                     <button className="danger" onClick={() => { setPop(null); leave(leaveLabel); }}><Icon n="trash" size={20} />{leaveLabel}</button>
                   </div>)}
               </div></>)}
@@ -290,13 +318,16 @@ function Chat({ me, onMe }) {
             <div className="sres">{msearch.res.length ? msearch.res.map((m) => (
               <div key={m.id} className="sr" onClick={() => jump(m)}><b>{m.sender_name}</b><small>{dayLabel(m.created_at)}, {hm(m.created_at)}</small><div>{m.text}</div></div>))
               : <div className="empty">Ничего не найдено</div>}</div>)}
-          <div className="msgs" onScroll={(e) => setDown(e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight > 300)}>
+          <div key={cur.id} className={'msgs' + (sel ? ' selmode' : '')} onScroll={(e) => setDown(e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight > 300)}>
             {msgs.map((m, i) => {
               const own = m.sender_id === me.id; const read = m.id <= peerRead;
               const newDay = i === 0 || new Date(m.created_at).toDateString() !== new Date(msgs[i - 1].created_at).toDateString();
               return (<Fragment key={m.id}>
                 {newDay && <div className="day"><span>{dayLabel(m.created_at)}</span></div>}
-                <div id={'m' + m.id} className={'bubble ' + (own ? 'out' : 'in')} onContextMenu={(e) => openMenu(e, m)} onClick={(e) => coarse && openMenu(e, m)}>
+                <div id={'m' + m.id} className={'bubble ' + (own ? 'out' : 'in') + (m.kind === 'sticker' ? ' stkmsg' : '') + (m.kind === 'gif' ? ' gifb' : '') + (fresh.includes(m.id) ? ' new' : '') + (gone.includes(m.id) ? ' gone' : '') + (sel ? ' selmode' : '') + (sel?.includes(m.id) ? ' selected' : '')}
+                  onContextMenu={(e) => (sel ? e.preventDefault() : openMenu(e, m))}
+                  onClick={(e) => (sel ? setSel((x) => (x.includes(m.id) ? x.filter((i) => i !== m.id) : [...x, m.id])) : coarse && openMenu(e, m))}>
+                  {sel && <span className="chk"><Icon n="check" size={14} /></span>}
                   {isGroup && !own && <div className="who">{m.sender_name}</div>}
                   {m.reply_to && <div className="quote"><b>{m.reply_name || ''}</b><div>{m.reply_name ? m.reply_text : 'Сообщение удалено'}</div></div>}
                   <Body m={m} onView={setViewer} />
@@ -309,9 +340,11 @@ function Chat({ me, onMe }) {
             <div className="strip"><Icon n={editing ? 'edit' : 'reply'} size={20} />
               <div className="quote"><b>{editing ? 'Редактирование' : reply.sender_name}</b><div>{(editing || reply).text || 'Вложение'}</div></div>
               <button className="ib" onClick={() => { setReply(null); setEditing(null); setText(''); }}><Icon n="close" size={20} /></button></div>)}
-          {emoji && canPost && <EmojiPicker onPick={(e) => setText((t) => t + e)}
+          {emoji && canPost && <EmojiPicker onSticker={(u) => sendMedia('sticker', u)} onGif={(u) => sendMedia('gif', u)} onPick={(e) => setText((t) => t + e)}
             onBackspace={() => setText((t) => { const g = [...new Intl.Segmenter().segment(t)]; g.pop(); return g.map((x) => x.segment).join(''); })} />}
-          {!canPost ? (
+          {cur.blocked ? (
+            <div className="composer"><div className="pill chanbar"><button className="ghost" onClick={toggleBlock}><Icon n="block" size={20} />Разблокировать</button></div></div>
+          ) : !canPost ? (
             <div className="composer"><div className="pill chanbar"><button className="ghost" onClick={() => toggleMute(cur.id)}><Icon n={muted ? 'volume' : 'volumeoff'} size={20} />{muted ? 'Включить звук' : 'Отключить звук'}</button></div></div>
           ) : rec ? (
             <div className="composer"><div className="pill recbar"><span className="dot" /><b>{fmt(secs)}</b><span className="grow" />
@@ -348,11 +381,11 @@ function Chat({ me, onMe }) {
           {canPost && <button onClick={() => { setReply(menu.m); setEditing(null); setMenu(null); }}><Icon n="reply" size={20} />Ответить</button>}
           {menu.m.text && <button onClick={() => { navigator.clipboard?.writeText(menu.m.text); setMenu(null); }}><Icon n="copy" size={20} />Копировать текст</button>}
           {menu.m.sender_id === me.id && menu.m.kind === 'text' && <button onClick={() => { setEditing(menu.m); setReply(null); setText(menu.m.text); setMenu(null); }}><Icon n="edit" size={20} />Изменить</button>}
-          <button className="danger" onClick={() => { setDel(menu.m); setDelAll(false); setMenu(null); }}><Icon n="trash" size={20} />Удалить</button>
+          <button className="danger" onClick={() => { setDel([menu.m]); setDelAll(false); setMenu(null); }}><Icon n="trash" size={20} />Удалить</button>
         </div>)}
       {del && (
         <div className="modal-back" onClick={() => setDel(null)}><div className="panel" onClick={(e) => e.stopPropagation()}>
-          <h2>Удалить сообщение</h2><div>Вы точно хотите удалить это сообщение?</div>
+          <h2>Удалить {del.length > 1 ? del.length + ' сообщ.' : 'сообщение'}</h2><div>Вы точно хотите удалить {del.length > 1 ? 'выбранные сообщения' : 'это сообщение'}?</div>
           {canAll && <label className="checkrow"><input type="checkbox" checked={delAll} onChange={(e) => setDelAll(e.target.checked)} />
             {cur.type === 'direct' ? `Также удалить для ${cur.name}` : isChannel ? 'Удалить у подписчиков' : 'Удалить для всех'}</label>}
           <div className="row"><button className="ghost" onClick={() => setDel(null)}>Отмена</button><button className="ghost danger-t" onClick={confirmDelete}>Удалить</button></div>
@@ -382,6 +415,7 @@ function Chat({ me, onMe }) {
             {!cq.trim() && !chats.some((c) => c.type === 'direct') && <div className="sub">Пока нет контактов. Найдите человека через поиск.</div>}</div>
         </div></div>)}
       {modal === 'edit' && <EditProfile me={me} onSave={onMe} onClose={() => setModal(null)} />}
+      {side === 'contact' && cur?.type === 'direct' && <ContactEdit chat={cur} muted={muted} onToggleMute={() => { setMute(cur.id, muted ? 0 : Infinity); bump(); }} onClose={() => setSide(null)} onSaved={loadChats} onDelete={() => leave('Удалить контакт')} />}
       {info && cur && <Info chat={cur} status={status} meId={me.id} onClose={() => setInfo(false)} onView={setViewer} onOpenUser={(u) => { setInfo(false); openUser(u); }} />}
       {viewer && (
         <div className="modal-back" onClick={() => setViewer(null)}>

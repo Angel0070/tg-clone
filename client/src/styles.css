@@ -104,3 +104,38 @@ img.emo { width:1.3em; height:1.3em; vertical-align:-.3em; margin:0 1px; }
 
 /* телефон */
 @media (max-width:760px) { .app { grid-template-columns:1fr; padding:0; gap:0; } aside,.spanel { border-radius:0; } .app.has-active aside,.app:not(.has-active) main { display:none; } header { border-radius:0; } header .back { display:grid; } .info { inset:0; width:100%; border-radius:0; } .pop.sub2 { left:0; bottom:calc(100% + 6px); } }
+
+/* стикеры, GIF */
+.epane { flex:1; min-height:0; display:flex; flex-direction:column; } .sub.wrap { white-space:normal; padding:8px; }
+.ebar { justify-content:center; gap:6px; position:relative; } .ebar .on { color:var(--blue); background:var(--hover); } .ebar .bsp { position:absolute; right:10px; }
+.sgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; } .stk { background:none; padding:4px; border-radius:12px; position:relative; aspect-ratio:1; display:grid; place-items:center; line-height:0; } .stk:hover { background:var(--hover); filter:none; } .stk img { width:100%; height:100%; object-fit:contain; }
+.stk.add { border:2px dashed var(--line); color:var(--sub); cursor:pointer; } .xdel { position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%; background:#000a; color:#fff; display:none; place-items:center; } .stk:hover .xdel { display:grid; }
+.ggrid { display:grid; grid-template-columns:repeat(3,1fr); gap:3px; } .gif { padding:0; background:#0003; border-radius:8px; overflow:hidden; aspect-ratio:1; line-height:0; } .gif:hover { filter:brightness(1.1); } .gif video { width:100%; height:100%; object-fit:cover; }
+.bubble.stkmsg { background:none; box-shadow:none; padding:0; max-width:210px; } .stk-img { display:block; width:190px; height:190px; object-fit:contain; }
+.bubble.stkmsg .time { position:absolute; right:6px; bottom:6px; float:none; margin:0; padding:2px 8px; border-radius:10px; background:#0007; color:#fff; opacity:1; }
+.bubble.gifb { padding:3px; } .bubble.gifb .pic { margin:0; max-height:260px; }
+
+/* меню «⋮», выбор сообщений, «Изменить» */
+.itemwrap { position:relative; } .pop.sub3 { left:auto; right:calc(100% + 6px); top:0; min-width:220px; } .sep { height:1px; background:var(--line); margin:4px 8px; } .sp { display:inline-block; width:18px; }
+.selcount { font-size:17px; } .msgs.selmode { padding-left:46px; } .bubble.selmode { cursor:pointer; }
+.chk { position:absolute; left:-34px; top:50%; transform:translateY(-50%); width:22px; height:22px; border:2px solid var(--sub); border-radius:50%; display:grid; place-items:center; color:transparent; transition:background .15s, border-color .15s; }
+.bubble.selected .chk { background:var(--blue); border-color:var(--blue); color:#fff; } .bubble.selected { outline:2px solid var(--blue); }
+.fields { gap:10px; padding:14px 16px; } .fields label { display:grid; gap:4px; font-size:12px; color:var(--sub); position:relative; } .cnt { position:absolute; right:12px; bottom:10px; }
+.hint { padding:2px 20px 6px; color:var(--sub); font-size:13px; } .savefab { position:absolute; right:18px; bottom:18px; } .cbx { width:auto; accent-color:var(--blue); } button.full { width:100%; display:flex; gap:12px; justify-content:flex-start; padding:12px; }
+
+/* анимации как в Telegram */
+@keyframes msgIn { from { opacity:0; transform:translateY(16px) scale(.9); } to { opacity:1; transform:none; } }
+@keyframes goneOut { from { max-height:400px; } to { opacity:0; transform:scale(.8); max-height:0; margin:0; padding-top:0; padding-bottom:0; } }
+@keyframes popIn { from { opacity:0; transform:scale(.9) translateY(-6px); } to { opacity:1; transform:none; } }
+@keyframes slideIn { from { opacity:0; transform:translateX(44px); } to { opacity:1; transform:none; } }
+@keyframes slideInL { from { opacity:0; transform:translateX(-30px); } to { opacity:1; transform:none; } }
+@keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+@keyframes zoomIn { from { opacity:0; transform:scale(.82); } to { opacity:1; transform:none; } }
+.bubble.new { animation:msgIn .3s cubic-bezier(.2,.8,.2,1); } .bubble.out.new { transform-origin:bottom right; } .bubble.in.new { transform-origin:bottom left; }
+.bubble.gone { animation:goneOut .26s ease forwards; overflow:hidden; pointer-events:none; }
+.pop,.ctx { animation:popIn .16s ease-out; transform-origin:top right; } .pop.menu { transform-origin:top left; } .pop.up { transform-origin:bottom left; } .pop.fabmenu { transform-origin:bottom right; }
+.epicker { animation:popIn .18s ease-out; transform-origin:bottom right; } .info { animation:slideIn .26s cubic-bezier(.2,.8,.2,1); } .spanel { animation:slideInL .22s cubic-bezier(.2,.8,.2,1); }
+.msgs { animation:fadeIn .22s ease; } .modal-back { animation:fadeIn .18s ease; } .panel { animation:popIn .2s ease-out; transform-origin:center; } .big { animation:zoomIn .24s cubic-bezier(.2,.8,.2,1); }
+.fab,.fab2,.vplay { transition:transform .15s, filter .15s; } .fab:active,.fab2:active { transform:scale(.92); } button:active:not(.item) { transform:scale(.97); }
+.item,.ib,.pop button,.ctx button,.em,.stk { transition:background .15s, color .15s; }
+@media (prefers-reduced-motion: reduce) { *,*::before { animation:none !important; transition:none !important; } }

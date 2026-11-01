@@ -17,9 +17,10 @@ for (const col of ['username TEXT', 'description TEXT', 'owner_id INT', 'ttl INT
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chats_username ON chats(username)');
 db.exec('CREATE TABLE IF NOT EXISTS stickers(id INTEGER PRIMARY KEY, user_id INT, url TEXT, created_at INTEGER)');
 db.exec('CREATE TABLE IF NOT EXISTS contacts(owner_id INT, user_id INT, first_name TEXT, last_name TEXT, note TEXT, PRIMARY KEY(owner_id, user_id))');
+db.exec('CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY, user_id INT, device TEXT, ip TEXT, created_at INTEGER, last_active INTEGER)');
 db.exec('CREATE TABLE IF NOT EXISTS blocks(user_id INT, blocked_id INT, PRIMARY KEY(user_id, blocked_id))');
 db.exec('CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY, user_id INT, text TEXT, created_at INTEGER)');
-for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT', 'last_seen INT']) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
+for (const col of ['avatar TEXT', 'bio TEXT', 'birthday TEXT', 'last_seen INT', 'session_days INT DEFAULT 180', "p_login TEXT DEFAULT 'all'", "p_seen TEXT DEFAULT 'all'", "p_photo TEXT DEFAULT 'all'", "p_bio TEXT DEFAULT 'all'", "p_birthday TEXT DEFAULT 'all'", "p_groups TEXT DEFAULT 'all'"]) { try { db.exec('ALTER TABLE users ADD COLUMN ' + col); } catch {} }
 
 const UP = path.resolve('uploads'); fs.mkdirSync(UP, { recursive: true });
 const app = express(); app.use(cors(), express.json());
@@ -27,12 +28,22 @@ app.use('/uploads', (req, res, next) => { res.set('X-Content-Type-Options', 'nos
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const online = new Map(); // userId -> число открытых вкладок
+const seenOk = (uid) => db.prepare('SELECT p_seen FROM users WHERE id=?').get(uid)?.p_seen !== 'none';
+const UA = [['Opera', /OPR\/(\d+)/], ['Edge', /Edg\/(\d+)/], ['Firefox', /Firefox\/(\d+)/], ['Chrome', /Chrome\/(\d+)/], ['Safari', /Version\/(\d+).*Safari/]];
+const uaName = (ua = '') => {
+  const hit = UA.map(([n, re]) => [n, re.exec(ua)]).find(([, m]) => m);
+  const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS X/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+  return (hit ? `${hit[0]} ${hit[1][1]}` : 'Браузер') + (os ? ', ' + os : '');
+};
 const codes = new Map(); // login -> { code, exp }
 
-const sign = (u) => jwt.sign({ id: u.id }, SECRET, { expiresIn: '30d' });
+const sign = (u, sid) => jwt.sign({ id: u.id, sid }, SECRET, { expiresIn: '30d' });
 const auth = (req, res, next) => {
-  try { req.uid = jwt.verify((req.headers.authorization || '').slice(7), SECRET).id; next(); }
-  catch { res.status(401).json({ error: 'Требуется вход' }); }
+  try {
+    const d = jwt.verify((req.headers.authorization || '').slice(7), SECRET);
+    if (d.sid && !db.prepare('UPDATE sessions SET last_active=? WHERE id=? AND user_id=?').run(Date.now(), d.sid, d.id).changes) throw new Error('revoked');
+    req.uid = d.id; req.sid = d.sid || null; next();
+  } catch { res.status(401).json({ error: 'Требуется вход' }); }
 };
 const isMember = (chatId, uid) => db.prepare('SELECT 1 FROM members WHERE chat_id=? AND user_id=?').get(chatId, uid);
 
@@ -59,7 +70,8 @@ app.post('/api/auth/verify', (req, res) => {
     const id = db.prepare('INSERT INTO users(login,name,username) VALUES(?,?,?)').run(login, name, 'user' + Date.now().toString(36)).lastInsertRowid;
     u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
   }
-  res.json({ token: sign(u), user: u });
+  const sid = db.prepare('INSERT INTO sessions(user_id,device,ip,created_at,last_active) VALUES(?,?,?,?,?)').run(u.id, uaName(req.headers['user-agent']), req.ip, Date.now(), Date.now()).lastInsertRowid;
+  res.json({ token: sign(u, sid), user: u });
 });
 
 const getMe = (id) => db.prepare('SELECT id,login,name,username,avatar,bio,birthday FROM users WHERE id=?').get(id);
@@ -108,7 +120,7 @@ app.post('/api/upload', auth, (req, res) => {
 
 app.get('/api/users/search', auth, (req, res) => {
   const q = `%${String(req.query.q || '').replace(/^@/, '')}%`;
-  res.json(db.prepare('SELECT id,name,username,avatar FROM users WHERE id!=? AND (username LIKE ? OR name LIKE ?) LIMIT 20').all(req.uid, q, q));
+  res.json(db.prepare('SELECT id,name,username,CASE WHEN p_photo=\'none\' THEN NULL ELSE avatar END AS avatar FROM users WHERE id!=? AND (username LIKE ? OR name LIKE ?) LIMIT 20').all(req.uid, q, q));
 });
 
 app.post('/api/chats/direct', auth, (req, res) => {
@@ -118,7 +130,7 @@ app.post('/api/chats/direct', auth, (req, res) => {
     WHERE c.type='direct'`).get(req.uid, peer);
   if (found) return res.json({ id: found.id });
   const id = db.prepare("INSERT INTO chats(type) VALUES('direct')").run().lastInsertRowid;
-  const add = db.prepare('INSERT INTO members VALUES(?,?)'); add.run(id, req.uid); add.run(id, peer);
+  const add = db.prepare('INSERT INTO members(chat_id,user_id) VALUES(?,?)'); add.run(id, req.uid); add.run(id, peer);
   res.json({ id });
 });
 
@@ -131,10 +143,10 @@ const notify = (chatId, ev, payload) =>
 app.post('/api/chats/group', auth, (req, res) => {
   const title = String(req.body.title || '').trim().slice(0, 64);
   const ids = [...new Set([req.uid, ...(req.body.userIds || []).map(Number)])]
-    .filter((u) => db.prepare('SELECT 1 FROM users WHERE id=?').get(u));
+    .filter((u) => { const r = db.prepare('SELECT p_groups FROM users WHERE id=?').get(u); return r && (u === req.uid || r.p_groups !== 'none'); });
   if (!title || ids.length < 2) return res.status(400).json({ error: 'Укажите название и добавьте хотя бы одного участника' });
   const id = db.prepare("INSERT INTO chats(type,title,owner_id) VALUES('group',?,?)").run(title, req.uid).lastInsertRowid;
-  const add = db.prepare('INSERT INTO members VALUES(?,?)');
+  const add = db.prepare('INSERT INTO members(chat_id,user_id) VALUES(?,?)');
   ids.forEach((u) => { add.run(id, u); io.to('user:' + u).emit('chats'); });
   res.json({ id });
 });
@@ -144,7 +156,7 @@ const decorate = (uid) => {
   const bl = new Set(db.prepare('SELECT blocked_id FROM blocks WHERE user_id=?').all(uid).map((b) => b.blocked_id));
   return (r) => {
     const c = cm.get(r.peer_id); const full = c ? `${c.first_name} ${c.last_name}`.trim() : '';
-    return { ...r, online: !!r.peer_id && online.has(r.peer_id), real_name: r.name, name: full || r.name,
+    return { ...r, online: r.p_seen !== 'none' && !!r.peer_id && online.has(r.peer_id), last_seen: r.p_seen === 'none' ? null : r.last_seen, avatar: r.p_photo === 'none' ? null : r.avatar, real_name: r.name, name: full || r.name,
       first_name: c?.first_name || '', last_name: c?.last_name || '', note: c?.note || '', blocked: bl.has(r.peer_id) };
   };
 };
@@ -154,7 +166,7 @@ app.get('/api/chats', auth, (req, res) => {
       CASE c.type WHEN 'direct' THEN p.name WHEN 'saved' THEN 'Избранное' ELSE c.title END AS name,
       CASE c.type WHEN 'direct' THEN p.username WHEN 'channel' THEN c.username ELSE NULL END AS username,
       CASE WHEN c.type='direct' THEN p.avatar END AS avatar,
-      CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, c.owner_id, c.description, c.ttl,
+      CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, p.p_seen AS p_seen, p.p_photo AS p_photo, c.owner_id, c.description, c.ttl,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
       (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
       (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
@@ -179,7 +191,9 @@ app.get('/api/chats/:id/info', auth, (req, res) => {
   if (c.type === 'channel') return res.json({ type: 'channel', title: c.title, description: c.description, username: c.username, owner_id: c.owner_id,
     subscribers: db.prepare('SELECT COUNT(*) AS n FROM members WHERE chat_id=?').get(c.id).n });
   if (c.type === 'saved') return res.json({ type: 'saved' });
-  res.json({ type: 'direct', user: db.prepare('SELECT u.id,u.name,u.username,u.avatar,u.bio,u.birthday,u.login FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND u.id!=?').get(c.id, req.uid) });
+  const u = db.prepare('SELECT u.id,u.name,u.username,u.avatar,u.bio,u.birthday,u.login,u.p_login,u.p_photo,u.p_bio,u.p_birthday FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND u.id!=?').get(c.id, req.uid);
+  if (u) { if (u.p_login === 'none') u.login = ''; if (u.p_photo === 'none') u.avatar = null; if (u.p_bio === 'none') u.bio = ''; if (u.p_birthday === 'none') u.birthday = ''; }
+  res.json({ type: 'direct', user: u });
 });
 
 app.get('/api/chats/:id/shared', auth, (req, res) => {
@@ -307,21 +321,54 @@ setInterval(() => { // автоудаление старых сообщений
   }
 }, 30000);
 
+// ---- приватность, чёрный список, сеансы ----
+const PRIV_KEYS = ['p_login', 'p_seen', 'p_photo', 'p_bio', 'p_birthday', 'p_groups'];
+app.get('/api/privacy', auth, (req, res) => res.json(db.prepare(`SELECT ${PRIV_KEYS.join(',')} FROM users WHERE id=?`).get(req.uid)));
+app.put('/api/privacy', auth, (req, res) => {
+  const { key, value } = req.body;
+  if (!PRIV_KEYS.includes(key) || !['all', 'none'].includes(value)) return res.status(400).json({ error: 'Неверная настройка' });
+  db.prepare(`UPDATE users SET ${key}=? WHERE id=?`).run(value, req.uid);
+  res.json({ ok: true });
+});
+app.get('/api/blocks', auth, (req, res) => res.json(db.prepare('SELECT u.id,u.name,u.username,u.avatar FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.user_id=?').all(req.uid)));
+
+app.get('/api/sessions', auth, (req, res) => res.json({
+  current: req.sid, days: db.prepare('SELECT session_days FROM users WHERE id=?').get(req.uid).session_days,
+  items: db.prepare('SELECT id,device,ip,created_at,last_active FROM sessions WHERE user_id=? ORDER BY last_active DESC').all(req.uid) }));
+app.delete('/api/sessions/:id', auth, (req, res) => {
+  const id = Number(req.params.id);
+  if (id === req.sid) return res.status(400).json({ error: 'Это текущий сеанс' });
+  db.prepare('DELETE FROM sessions WHERE id=? AND user_id=?').run(id, req.uid);
+  io.to('sess:' + id).emit('logout'); res.json({ ok: true });
+});
+app.post('/api/sessions/terminate-others', auth, (req, res) => {
+  for (const s of db.prepare('SELECT id FROM sessions WHERE user_id=? AND id!=?').all(req.uid, req.sid || 0)) {
+    db.prepare('DELETE FROM sessions WHERE id=?').run(s.id); io.to('sess:' + s.id).emit('logout');
+  }
+  res.json({ ok: true });
+});
+app.put('/api/sessions/ttl', auth, (req, res) => {
+  const days = [7, 30, 90, 180].includes(Number(req.body.days)) ? Number(req.body.days) : 180;
+  db.prepare('UPDATE users SET session_days=? WHERE id=?').run(days, req.uid); res.json({ days });
+});
+setInterval(() => db.prepare('DELETE FROM sessions WHERE last_active < ? - (SELECT session_days FROM users WHERE id=sessions.user_id) * 86400000').run(Date.now()), 60000);
+
 // --- Реалтайм ---
 io.use((s, next) => {
-  try { s.uid = jwt.verify(s.handshake.auth.token, SECRET).id; next(); } catch { next(new Error('auth')); }
+  try { const d = jwt.verify(s.handshake.auth.token, SECRET); if (d.sid && !db.prepare('SELECT 1 FROM sessions WHERE id=?').get(d.sid)) throw new Error('revoked'); s.uid = d.id; s.sid = d.sid; next(); } catch { next(new Error('auth')); }
 });
 io.on('connection', (s) => {
   s.join('user:' + s.uid);
+  if (s.sid) s.join('sess:' + s.sid);
   online.set(s.uid, (online.get(s.uid) || 0) + 1);
-  if (online.get(s.uid) === 1) io.emit('presence', { userId: s.uid, online: true });
+  if (online.get(s.uid) === 1 && seenOk(s.uid)) io.emit('presence', { userId: s.uid, online: true });
   s.on('disconnect', () => {
     const n = (online.get(s.uid) || 1) - 1;
     if (n > 0) return online.set(s.uid, n);
     online.delete(s.uid);
     const lastSeen = Date.now();
     db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(lastSeen, s.uid);
-    io.emit('presence', { userId: s.uid, online: false, lastSeen });
+    if (seenOk(s.uid)) io.emit('presence', { userId: s.uid, online: false, lastSeen });
   });
   s.on('read', ({ chatId, upTo }) => {
     upTo = Number(upTo);

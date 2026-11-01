@@ -20,7 +20,7 @@ export function Info({ chat, status, meId, onClose, onView, onOpenUser }) {
         <div className="iprof"><Ava name={chat.name} url={u?.avatar || chat.avatar} /><div className="nm bignm">{chat.name}</div>
           <div className="sub">{data?.type === 'group' ? `${data.members.length} участн.` : data?.type === 'channel' ? `${data.subscribers} подписчиков` : status}</div></div>
         {u && <div className="icard">
-          <div><b>{u.login}</b><small>{u.login.includes('@') ? 'Email' : 'Телефон'}</small></div>
+          {u.login && <div><b>{u.login}</b><small>{u.login.includes('@') ? 'Email' : 'Телефон'}</small></div>}
           {u.bio && <div><b>{u.bio}</b><small>О себе</small></div>}
           {u.birthday && <div><b>{bday(u.birthday)}</b><small>День рождения</small></div>}
           <div><b>@{u.username}</b><small>Имя пользователя</small></div></div>}

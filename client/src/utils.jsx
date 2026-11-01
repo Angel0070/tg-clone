@@ -1,15 +1,17 @@
 import { Icon } from './icons.jsx';
+import { prefs } from './prefs.js';
+import { LOC } from './i18n.js';
 
 /* ---------- Утилиты ---------- */
 export const EMOJI = '😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🤔 😐 😏 😒 🙄 😬 😌 😔 😴 😷 🤒 🥵 🥶 🤯 🤠 😎 🤓 🧐 😕 😟 🙁 😮 😲 😳 🥺 😢 😭 😱 😖 😞 😩 😫 😤 😡 🤬 😈 💀 💩 🤡 👻 👽 🤖 👍 👎 👌 🤞 🤟 🤘 👋 🙏 💪 👏 🙌 🤝 ❤️ 🧡 💛 💚 💙 💜 🖤 💔 🔥 ✨ ⭐ 🎉 🎂 🎁 🍕 🍔 🍟 🍺 ☕ 🐶 🐱 🦊 🐻 🐼 🐸 🐵 🙈'.split(' ');
 export const fmt = (n) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
-export const hm = (t) => new Date(t).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+export const hm = (t) => new Date(t).toLocaleTimeString(LOC(), { hour: '2-digit', minute: '2-digit', hour12: prefs.h12 });
 export const dayLabel = (t) => {
   const d = new Date(t), n = new Date();
   const diff = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
-  return diff === 0 ? 'Сегодня' : diff === 1 ? 'Вчера' : d.toLocaleDateString('ru', { day: 'numeric', month: 'long' });
+  return diff === 0 ? 'Сегодня' : diff === 1 ? 'Вчера' : d.toLocaleDateString(LOC(), { day: 'numeric', month: 'long' });
 };
-export const listTime = (t) => (!t ? '' : dayLabel(t) === 'Сегодня' ? hm(t) : new Date(t).toLocaleDateString('ru', { day: 'numeric', month: 'short' }));
+export const listTime = (t) => (!t ? '' : dayLabel(t) === 'Сегодня' ? hm(t) : new Date(t).toLocaleDateString(LOC(), { day: 'numeric', month: 'short' }));
 export const seen = (p) => {
   if (!p) return '';
   if (p.online) return 'в сети';
@@ -19,13 +21,13 @@ export const seen = (p) => {
   return d === 'Сегодня' ? `был(а) в ${hm(p.lastSeen)}` : d === 'Вчера' ? `был(а) вчера в ${hm(p.lastSeen)}` : `был(а) ${d}`;
 };
 export const size = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' МБ' : Math.max(1, Math.round((n || 0) / 1024)) + ' КБ');
-export const dd = (t) => new Date(t).toLocaleDateString('ru', { day: 'numeric', month: 'short', year: 'numeric' });
+export const dd = (t) => new Date(t).toLocaleDateString(LOC(), { day: 'numeric', month: 'short', year: 'numeric' });
 export const yrs = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'год' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'года' : 'лет');
 export const bday = (d) => {
   const [y, mo, da] = d.split('-').map(Number); if (!y) return '';
   const now = new Date(); let age = now.getFullYear() - y;
   if (now < new Date(now.getFullYear(), mo - 1, da)) age--;
-  return `${da} ${new Date(y, mo - 1, da).toLocaleDateString('ru', { month: 'long' })} (${age} ${yrs(age)})`;
+  return `${da} ${new Date(y, mo - 1, da).toLocaleDateString(LOC(), { month: 'long' })} (${age} ${yrs(age)})`;
 };
 export const ext = (name) => (String(name || 'file').split('.').pop() || 'file').slice(0, 4);
 export const URL_RE = /(https?:\/\/[^\s<]+)/;
@@ -43,3 +45,4 @@ export const twemojiUrl = (e) => {
   const cps = Array.from(e).map((c) => c.codePointAt(0).toString(16));
   return `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${(cps.includes('200d') ? cps : cps.filter((c) => c !== 'fe0f')).join('-')}.svg`;
 };
+export const isOneEmoji = (t) => new RegExp('^' + EMOJI_RE.source + '$', 'u').test(t.trim());

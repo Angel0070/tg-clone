@@ -28,15 +28,17 @@ export function Voice({ m }) {
     </div>);
 }
 
-export function Body({ m, onView }) {
+export function Body({ m, onView, auto = { photo: true, video: true, gif: true } }) {
   const stop = (e) => e.stopPropagation();
+  const [load, setLoad] = useState(false);
+  const dl = (ico, label) => <button className="dl" onClick={(e) => { stop(e); setLoad(true); }}><Icon n={ico} size={24} /><span><b>{label}</b><small>{size(m.file_size)}</small><small>Нажмите, чтобы загрузить</small></span></button>;
   return (<>
     {m.kind === 'voice' && <Voice m={m} />}
     {m.kind === 'sticker' && <img className="stk-img" src={m.file_url} alt="" draggable="false" />}
-    {m.kind === 'gif' && <video className="pic" src={m.file_url} autoPlay loop muted playsInline onClick={stop} />}
+    {m.kind === 'gif' && <video className="pic" src={m.file_url} autoPlay={auto.gif} controls={!auto.gif} loop muted playsInline onClick={stop} />}
     {m.kind === 'audio' && <div className="music" onClick={stop}><span className="fi blue"><Icon n="music" size={22} /></span><div><b>{m.file_name}</b><audio controls preload="metadata" src={m.file_url} /></div></div>}
-    {m.kind === 'image' && <img className="pic" src={m.file_url} alt="" onClick={(e) => { stop(e); onView(m); }} />}
-    {m.kind === 'video' && <video className="pic" controls preload="metadata" src={m.file_url} onClick={stop} />}
+    {m.kind === 'image' && (auto.photo || load ? <img className="pic" src={m.file_url} alt="" onClick={(e) => { stop(e); onView(m); }} /> : dl('image', 'Фото'))}
+    {m.kind === 'video' && (auto.video || load ? <video className="pic" controls preload="metadata" src={m.file_url} onClick={stop} /> : dl('image', 'Видео'))}
     {m.kind === 'file' && <a className="file" href={m.file_url} download={m.file_name} onClick={stop}>
       <span className="fi">{ext(m.file_name)}</span><span><b>{m.file_name}</b><small>{size(m.file_size)}</small></span></a>}
     {m.text && <div className={'txt' + (isBigEmoji(m.text) ? ' bigemo' : '')}><Linkify text={m.text} /></div>}

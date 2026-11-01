@@ -64,3 +64,10 @@ Object.assign(ICONS, {
   checkc: <><circle cx="12" cy="12" r="9" /><path d="M8 12.500l3 3 5-6" /></>,
   block: <><circle cx="12" cy="12" r="9" /><path d="M5.600 5.600l12.800 12.800" /></>,
 });
+Object.assign(ICONS, {
+  lock: <><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></>,
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+  pie: <><path d="M21 12A9 9 0 1 1 12 3v9z" /><path d="M15 3.500A9 9 0 0 1 20.500 9H15z" /></>,
+  palette: <><circle cx="12" cy="12" r="9" /><circle cx="8" cy="10" r="1" /><circle cx="12" cy="7.500" r="1" /><circle cx="16" cy="10" r="1" /><path d="M12 21a2 2 0 0 1 0-4 2 2 0 0 0 2-2" /></>,
+  star: <path d="M12 3l2.700 5.600 6.100.9-4.400 4.300 1 6.100L12 17l-5.400 2.900 1-6.100L3.200 9.500l6.100-.9z" />,
+});

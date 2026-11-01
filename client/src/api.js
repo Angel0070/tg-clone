@@ -9,6 +9,7 @@ export async function api(path, body, method) {
     method: method || (body ? 'POST' : 'GET'),
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() },
     body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401 && getToken()) { localStorage.removeItem('token'); location.reload(); }
   return readJson(r, 'Ошибка сервера');
 }
 export async function uploadFile(file) {

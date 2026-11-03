@@ -11,10 +11,12 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, chat_id INT, sender_
 `);
 
 db.exec('CREATE TABLE IF NOT EXISTS hidden(user_id INT, message_id INT, PRIMARY KEY(user_id, message_id))');
-for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0', 'waveform TEXT']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
+for (const col of ['reply_to INT', 'edited INT DEFAULT 0', 'deleted INT DEFAULT 0', "kind TEXT DEFAULT 'text'", 'file_url TEXT', 'duration INT DEFAULT 0', 'file_name TEXT', 'file_size INT DEFAULT 0', 'waveform TEXT', 'fwd TEXT']) { try { db.exec('ALTER TABLE messages ADD COLUMN ' + col); } catch {} }
 try { db.exec('ALTER TABLE members ADD COLUMN last_read INT DEFAULT 0'); } catch {}
 for (const col of ['username TEXT', 'description TEXT', 'owner_id INT', 'ttl INT DEFAULT 0']) { try { db.exec('ALTER TABLE chats ADD COLUMN ' + col); } catch {} }
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chats_username ON chats(username)');
+db.exec('CREATE TABLE IF NOT EXISTS reactions(message_id INT, user_id INT, emoji TEXT, PRIMARY KEY(message_id, user_id))');
+db.exec('CREATE TABLE IF NOT EXISTS pins(id INTEGER PRIMARY KEY, chat_id INT, message_id INT, owner_id INT, shared INT DEFAULT 0, created_at INTEGER, UNIQUE(message_id, owner_id))');
 db.exec('CREATE TABLE IF NOT EXISTS stickers(id INTEGER PRIMARY KEY, user_id INT, url TEXT, created_at INTEGER)');
 db.exec('CREATE TABLE IF NOT EXISTS contacts(owner_id INT, user_id INT, first_name TEXT, last_name TEXT, note TEXT, PRIMARY KEY(owner_id, user_id))');
 db.exec('CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY, user_id INT, device TEXT, ip TEXT, created_at INTEGER, last_active INTEGER)');
@@ -134,9 +136,15 @@ app.post('/api/chats/direct', auth, (req, res) => {
   res.json({ id });
 });
 
-const getMsg = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, CASE WHEN r.text!='' THEN r.text WHEN r.kind='voice' THEN 'Голосовое сообщение' WHEN r.kind='sticker' THEN 'Стикер' WHEN r.kind='gif' THEN 'GIF' WHEN r.kind='image' THEN 'Фото' WHEN r.kind='video' THEN 'Видео' ELSE 'Файл' END AS reply_text, ru.name AS reply_name
+const getMsg0 = (id) => db.prepare(`SELECT m.*, u.name AS sender_name, (SELECT COUNT(*) FROM members mm WHERE mm.chat_id=m.chat_id AND mm.last_read>=m.id AND mm.user_id!=m.sender_id) AS views, CASE WHEN r.text!='' THEN r.text WHEN r.kind='voice' THEN 'Голосовое сообщение' WHEN r.kind='sticker' THEN 'Стикер' WHEN r.kind='gif' THEN 'GIF' WHEN r.kind='image' THEN 'Фото' WHEN r.kind='video' THEN 'Видео' ELSE 'Файл' END AS reply_text, ru.name AS reply_name
   FROM messages m JOIN users u ON u.id=m.sender_id
   LEFT JOIN messages r ON r.id=m.reply_to LEFT JOIN users ru ON ru.id=r.sender_id WHERE m.id=?`).get(id);
+const getMsg = (id) => {
+  const m = getMsg0(id); if (!m) return m;
+  m.reactions = db.prepare('SELECT emoji, GROUP_CONCAT(user_id) AS users FROM reactions WHERE message_id=? GROUP BY emoji ORDER BY MIN(rowid)').all(id)
+    .map((r) => ({ emoji: r.emoji, users: String(r.users).split(',').map(Number) }));
+  return m;
+};
 const notify = (chatId, ev, payload) =>
   db.prepare('SELECT user_id FROM members WHERE chat_id=?').all(chatId).forEach((m) => io.to('user:' + m.user_id).emit(ev, payload));
 
@@ -167,6 +175,8 @@ app.get('/api/chats', auth, (req, res) => {
       CASE c.type WHEN 'direct' THEN p.username WHEN 'channel' THEN c.username ELSE NULL END AS username,
       CASE WHEN c.type='direct' THEN p.avatar END AS avatar,
       CASE WHEN c.type='direct' THEN p.id END AS peer_id, p.last_seen AS last_seen, p.p_seen AS p_seen, p.p_photo AS p_photo, c.owner_id, c.description, c.ttl,
+      (SELECT sender_id FROM messages WHERE chat_id=c.id AND deleted=0 ORDER BY id DESC LIMIT 1) AS last_sender,
+      (SELECT id FROM messages WHERE chat_id=c.id AND deleted=0 ORDER BY id DESC LIMIT 1) AS last_id,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
       (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
       (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
@@ -189,7 +199,8 @@ app.get('/api/chats/:id/info', auth, (req, res) => {
   if (c.type === 'group')
     return res.json({ type: 'group', title: c.title, members: db.prepare('SELECT u.id,u.name,u.username,u.avatar FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?').all(c.id) });
   if (c.type === 'channel') return res.json({ type: 'channel', title: c.title, description: c.description, username: c.username, owner_id: c.owner_id,
-    subscribers: db.prepare('SELECT COUNT(*) AS n FROM members WHERE chat_id=?').get(c.id).n });
+    subscribers: db.prepare('SELECT COUNT(*) AS n FROM members WHERE chat_id=?').get(c.id).n,
+    members: c.owner_id === req.uid ? db.prepare('SELECT u.id,u.name,u.username,u.avatar FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?').all(c.id) : undefined });
   if (c.type === 'saved') return res.json({ type: 'saved' });
   const u = db.prepare('SELECT u.id,u.name,u.username,u.avatar,u.bio,u.birthday,u.login,u.p_login,u.p_photo,u.p_bio,u.p_birthday FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND u.id!=?').get(c.id, req.uid);
   if (u) { if (u.p_login === 'none') u.login = ''; if (u.p_photo === 'none') u.avatar = null; if (u.p_bio === 'none') u.bio = ''; if (u.p_birthday === 'none') u.birthday = ''; }
@@ -198,7 +209,7 @@ app.get('/api/chats/:id/info', auth, (req, res) => {
 
 app.get('/api/chats/:id/shared', auth, (req, res) => {
   if (!isMember(req.params.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
-  const where = { media: "kind IN ('image','video')", files: "kind='file'", voice: "kind='voice'", links: "text LIKE '%http%'" }[req.query.type];
+  const where = { media: "kind IN ('image','video')", files: "kind='file'", voice: "kind='voice'", music: "kind='audio'", links: "text LIKE '%http%'" }[req.query.type];
   if (!where) return res.json([]);
   const ids = db.prepare(`SELECT id FROM messages WHERE chat_id=? AND deleted=0 AND ${where} AND id NOT IN (SELECT message_id FROM hidden WHERE user_id=?) ORDER BY id DESC LIMIT 200`).all(req.params.id, req.uid);
   res.json(ids.map((r) => getMsg(r.id)));
@@ -353,6 +364,26 @@ app.put('/api/sessions/ttl', auth, (req, res) => {
 });
 setInterval(() => db.prepare('DELETE FROM sessions WHERE last_active < ? - (SELECT session_days FROM users WHERE id=sessions.user_id) * 86400000').run(Date.now()), 60000);
 
+// ---- закреплённые сообщения ----
+app.get('/api/chats/:id/pins', auth, (req, res) => {
+  if (!isMember(req.params.id, req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const ids = db.prepare('SELECT DISTINCT message_id FROM pins WHERE chat_id=? AND (shared=1 OR owner_id=?) ORDER BY created_at').all(req.params.id, req.uid);
+  res.json(ids.map((r) => getMsg(r.message_id)).filter((m) => m && !m.deleted));
+});
+app.post('/api/pins', auth, (req, res) => {
+  const m = db.prepare('SELECT m.id, m.chat_id, c.type, c.owner_id FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.id=? AND m.deleted=0').get(Number(req.body.messageId));
+  if (!m || !isMember(m.chat_id, req.uid) || (m.type === 'channel' && m.owner_id !== req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  const shared = m.type === 'direct' ? (req.body.forAll ? 1 : 0) : 1;
+  db.prepare('INSERT OR REPLACE INTO pins(chat_id,message_id,owner_id,shared,created_at) VALUES(?,?,?,?,?)').run(m.chat_id, m.id, req.uid, shared, Date.now());
+  notify(m.chat_id, 'pins', { chatId: m.chat_id }); res.json({ ok: true });
+});
+app.delete('/api/pins/:mid', auth, (req, res) => {
+  const m = db.prepare('SELECT m.id, m.chat_id, c.type, c.owner_id FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.id=?').get(Number(req.params.mid));
+  if (!m || !isMember(m.chat_id, req.uid) || (m.type === 'channel' && m.owner_id !== req.uid)) return res.status(403).json({ error: 'Нет доступа' });
+  db.prepare('DELETE FROM pins WHERE message_id=? AND (owner_id=? OR shared=1)').run(m.id, req.uid);
+  notify(m.chat_id, 'pins', { chatId: m.chat_id }); res.json({ ok: true });
+});
+
 // --- Реалтайм ---
 io.use((s, next) => {
   try { const d = jwt.verify(s.handshake.auth.token, SECRET); if (d.sid && !db.prepare('SELECT 1 FROM sessions WHERE id=?').get(d.sid)) throw new Error('revoked'); s.uid = d.id; s.sid = d.sid; next(); } catch { next(new Error('auth')); }
@@ -416,6 +447,34 @@ io.on('connection', (s) => {
     } else {
       db.prepare('INSERT OR IGNORE INTO hidden VALUES(?,?)').run(s.uid, id);
       io.to('user:' + s.uid).emit('message:delete', { id, chat_id: m.chat_id });
+    }
+  });
+  s.on('react', ({ id, emoji }) => {
+    const m = db.prepare('SELECT chat_id FROM messages WHERE id=? AND deleted=0').get(id);
+    if (!m || !isMember(m.chat_id, s.uid) || typeof emoji !== 'string' || emoji.length > 16 || !/^\p{Extended_Pictographic}[\uFE0F\u200D\p{Extended_Pictographic}]*$/u.test(emoji)) return;
+    const had = db.prepare('SELECT emoji FROM reactions WHERE message_id=? AND user_id=?').get(id, s.uid);
+    if (had?.emoji === emoji) db.prepare('DELETE FROM reactions WHERE message_id=? AND user_id=?').run(id, s.uid);
+    else db.prepare('INSERT OR REPLACE INTO reactions(message_id,user_id,emoji) VALUES(?,?,?)').run(id, s.uid, emoji);
+    notify(m.chat_id, 'message:update', getMsg(id));
+  });
+  const canWrite = (chatId) => {
+    const ch = db.prepare('SELECT type, owner_id FROM chats WHERE id=?').get(chatId);
+    if (!ch || !isMember(chatId, s.uid) || (ch.type === 'channel' && ch.owner_id !== s.uid)) return false;
+    if (ch.type === 'direct') {
+      const peer = db.prepare('SELECT user_id FROM members WHERE chat_id=? AND user_id!=?').get(chatId, s.uid);
+      if (peer && db.prepare('SELECT 1 FROM blocks WHERE (user_id=? AND blocked_id=?) OR (user_id=? AND blocked_id=?)').get(s.uid, peer.user_id, peer.user_id, s.uid)) return false;
+    }
+    return true;
+  };
+  s.on('forward', ({ ids, chatId }) => {
+    if (!Array.isArray(ids) || !canWrite(chatId)) return s.emit('notice', 'Сюда нельзя пересылать сообщения');
+    for (const id of ids.map(Number).filter(Boolean).sort((a, b) => a - b).slice(0, 50)) {
+      const m = db.prepare('SELECT m.*, c.type AS ctype, c.title AS ctitle FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.id=? AND m.deleted=0').get(id);
+      if (!m || !isMember(m.chat_id, s.uid)) continue;
+      const from = m.ctype === 'channel' ? m.ctitle : db.prepare('SELECT name FROM users WHERE id=?').get(m.sender_id)?.name || '';
+      const nid = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,kind,file_url,file_name,file_size,duration,waveform,fwd) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+        .run(chatId, s.uid, m.text, Date.now(), m.kind, m.file_url, m.file_name, m.file_size, m.duration, m.waveform, from).lastInsertRowid;
+      notify(chatId, 'message', getMsg(nid));
     }
   });
   s.on('typing', ({ chatId }) => {

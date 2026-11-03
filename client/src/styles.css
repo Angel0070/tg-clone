@@ -156,3 +156,63 @@ body { overflow:hidden; } .app { background-image:none; position:relative; isola
 .abody { flex:1; min-height:0; display:flex; flex-direction:column; } .tabs-left .abody { flex-direction:row; } .tabs-left .ftabs { flex-direction:column; flex:none; width:82px; padding:6px 4px; overflow:auto; } .tabs-left .ftabs button { flex-direction:column; gap:3px; padding:10px 4px; font-size:12px; }
 .no-send .bubble.new { animation:none; } .no-del .bubble.gone { animation:none; display:none; } .no-menu .pop,.no-menu .ctx,.no-menu .epicker { animation:none; }
 .no-blur .pop,.no-blur .ctx,.no-blur .epicker,.no-blur header,.no-blur aside { backdrop-filter:none; } .no-panel .info,.no-panel .spanel { animation:none; } .no-chat .msgs { animation:none; } .no-media .big { animation:none; }
+
+/* ===== Часть C: дизайн как в Telegram ===== */
+body { font-family:Roboto,Inter,-apple-system,"Segoe UI",sans-serif; }
+:root { --patcolor:#5f7d4a; }
+:root[data-theme="dark"] { --in:#212121; --patcolor:#8774e1; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) { --in:#212121; --patcolor:#8774e1; } }
+.app::after { background-image:none; background-color:var(--patcolor); -webkit-mask-image:var(--patimg); mask-image:var(--patimg); }
+
+/* список чатов */
+.top { padding:12px 12px 8px; } .sbox { height:44px; background:var(--hover); }
+.ftabs { margin:0 12px 8px; padding:4px; background:var(--hover); border-radius:22px; gap:2px; }
+.ftabs button { padding:8px 14px; border-radius:18px; font-size:15px; font-weight:500; }
+.ftabs .on { background:color-mix(in srgb, var(--blue) 24%, transparent); color:var(--blue); }
+.ftabs .badge { background:var(--blue); color:#fff; }
+.item { min-height:72px; padding:9px 10px; gap:12px; border-radius:16px; } .ava { width:54px; height:54px; } .meta .nm { font-size:16px; font-weight:500; } .meta .sub { font-size:15px; }
+.tl { display:inline-flex; gap:3px; align-items:center; color:var(--sub); } .item.sel .tl { color:#fff; }
+
+/* сообщения */
+.msgs { gap:0; padding-left:14px; padding-right:14px; }
+.bubble { max-width:min(540px,84%); padding:7px 12px 6px; font-size:16px; line-height:1.38; border-radius:16px; margin-top:2px; box-shadow:none; }
+.bubble.gs { margin-top:9px; } .bubble.in { border-bottom-left-radius:16px; } .bubble.out { border-bottom-right-radius:16px; }
+.bubble.in.tail { border-bottom-left-radius:4px; } .bubble.out.tail { border-bottom-right-radius:4px; }
+.bubble.tail::after { content:''; position:absolute; bottom:0; width:9px; height:13px; }
+.bubble.in.tail::after { left:-8px; background:var(--in); clip-path:path('M9 0V13C6 13 2 12 0 10C4 9 9 6 9 0Z'); }
+.bubble.out.tail::after { right:-8px; background:var(--out); clip-path:path('M0 0V13C3 13 7 12 9 10C5 9 0 6 0 0Z'); }
+.bubble.stkmsg::after,.bubble.gifb::after { display:none; }
+.time { font-size:12px; color:var(--sub); opacity:1; margin:8px 0 -3px 12px; } .bubble.out .time { color:#ffffffb8; } .time.read { color:var(--tick); } .bubble.out .time.read { color:#fff; }
+.views { display:inline-flex; gap:3px; align-items:center; margin-right:8px; }
+.fwdl { display:flex; gap:6px; align-items:center; color:var(--blue); font-size:14px; font-weight:500; margin-bottom:3px; } .bubble.out .fwdl,.bubble.out .who { color:#fff; } .fwdl .who { font-weight:700; }
+.reacts { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0 0; }
+.rc { display:flex; align-items:center; gap:5px; padding:3px 10px 3px 6px; border-radius:14px; background:color-mix(in srgb, var(--blue) 18%, transparent); color:var(--txt); font-size:13px; font-weight:600; }
+.rc img.emo { width:18px; height:18px; margin:0; vertical-align:middle; } .rc.mine { background:var(--blue); color:#fff; } .rc:hover { filter:brightness(1.1); }
+.bubble.out .rc { background:#ffffff2e; color:#fff; } .bubble.out .rc.mine { background:#fff; color:var(--out); }
+.qh { position:absolute; bottom:2px; width:30px; height:30px; padding:0; border-radius:50%; background:transparent; color:var(--sub); display:grid; place-items:center; opacity:0; transition:opacity .15s, color .15s; }
+.bubble.in .qh { right:-36px; } .bubble.out .qh { left:-36px; } .bubble:hover .qh { opacity:1; } .qh:hover { color:#ff4d6d; background:var(--hover); filter:none; } .qh:hover svg { fill:#ff4d6d; }
+.share { position:absolute; right:-48px; bottom:4px; width:38px; height:38px; padding:0; border-radius:50%; background:var(--glass); color:var(--txt); display:grid; place-items:center; box-shadow:0 2px 10px #0004; backdrop-filter:blur(14px); }
+.bubble.selmode .qh,.bubble.selmode .share { display:none; }
+
+/* закреплённое сообщение */
+.pinbar { position:absolute; top:68px; left:0; right:0; z-index:9; display:flex; align-items:center; gap:10px; padding:6px 8px 6px 14px; border-radius:18px; background:var(--glass); backdrop-filter:blur(18px); box-shadow:0 4px 18px #0003; cursor:pointer; }
+.pbar { width:3px; align-self:stretch; border-radius:2px; background:var(--blue); } .pbody { flex:1; min-width:0; } .pt { color:var(--blue); font-size:13px; font-weight:600; }
+.px { font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .msgs.haspin { padding-top:140px; }
+
+/* контекстное меню + реакции */
+.ctxw { position:fixed; z-index:60; display:grid; gap:8px; justify-items:start; animation:popIn .16s ease-out; transform-origin:top left; }
+.rbar { display:flex; align-items:center; flex-wrap:wrap; gap:1px; padding:4px 6px; max-width:352px; border-radius:26px; background:var(--glass); backdrop-filter:blur(20px); box-shadow:0 8px 28px #0006; }
+.rbar .re { background:none; padding:3px; border-radius:50%; line-height:0; transition:transform .12s; } .rbar .re:hover { transform:scale(1.22); filter:none; } .rbar .re.on { background:var(--hover); }
+.rbar img.emo { width:30px; height:30px; margin:0; vertical-align:top; } .rbar .rot { display:grid; transition:transform .15s; }
+.ctx2 { min-width:230px; padding:6px; border-radius:16px; background:var(--glass); backdrop-filter:blur(20px); box-shadow:0 10px 36px #0006; display:grid; }
+.ctx2 button { background:none; color:var(--txt); text-align:left; border-radius:10px; padding:9px 12px; display:flex; gap:14px; align-items:center; font-weight:500; font-size:14.5px; width:100%; }
+.ctx2 button:hover { background:var(--hover); filter:none; } .ctx2 .danger { color:#e53935; }
+
+/* диалоги как в Telegram */
+.dlg { width:min(420px,100%); background:var(--side); border-radius:22px; padding:22px 24px 14px; box-shadow:0 20px 60px #0008; animation:popIn .2s ease-out; }
+.dlg h2 { margin:0 0 14px; font-size:20px; font-weight:500; } .dlg p { margin:0 0 16px; } .dlg .checkrow { display:flex; gap:12px; align-items:center; margin-bottom:6px; }
+.dbtns { display:flex; justify-content:flex-end; gap:6px; margin-top:8px; } .tbtn { background:none; color:var(--blue); text-transform:uppercase; font-weight:700; letter-spacing:.3px; padding:10px 14px; } .tbtn:hover { background:var(--hover); filter:none; } .tbtn.danger { color:#e53935; }
+
+/* панель «Информация / О канале» */
+.irow { display:flex; gap:16px; align-items:center; padding:9px 0; } .irow.click { cursor:pointer; } .irow b { font-weight:500; word-break:break-word; } .subrow { padding:6px 0 6px 52px; }
+.info .icard { padding:4px 16px; } .iprof .nm { font-size:22px; }

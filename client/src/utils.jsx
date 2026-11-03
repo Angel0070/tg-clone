@@ -40,9 +40,11 @@ export const isBigEmoji = (t) => ONLY_EMOJI.test(t.trim());
 export const Linkify = ({ text }) => text.split(URL_RE).map((p, i) => (i % 2
   ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>{p}</a> : <Emojify key={i} text={p} />));
 export const Ava = ({ name, url, online, icon }) => (
-  <div className="avw">{url ? <img className="ava" src={url} alt="" /> : icon ? <div className="ava ico"><Icon n={icon} size={26} /></div> : <div className="ava">{(name || '?')[0]}</div>}{online && <i className="odot" />}</div>);
+  <div className="avw">{url ? <img className="ava" src={url} alt="" /> : icon ? <div className="ava ico"><Icon n={icon} size={26} /></div> : <div className="ava" style={{ background: grad(name) }}>{(name || '?')[0]}</div>}{online && <i className="odot" />}</div>);
 export const twemojiUrl = (e) => {
   const cps = Array.from(e).map((c) => c.codePointAt(0).toString(16));
   return `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${(cps.includes('200d') ? cps : cps.filter((c) => c !== 'fe0f')).join('-')}.svg`;
 };
 export const isOneEmoji = (t) => new RegExp('^' + EMOJI_RE.source + '$', 'u').test(t.trim());
+const PAL = ['#ff885e,#ff516a', '#ffcd6a,#ffa85c', '#82b1ff,#665fff', '#a0de7e,#54cb68', '#53edd6,#28c9b7', '#72d5fd,#2a9ef1', '#e0a2f3,#d669ed'];
+const grad = (n = '') => `linear-gradient(135deg,${PAL[[...String(n)].reduce((a, c) => a + c.codePointAt(0), 0) % PAL.length]})`;

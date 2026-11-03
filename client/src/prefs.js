@@ -1,6 +1,6 @@
 const get = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
 const D = {
-  theme: 'auto', fx: true, fs: 15, h12: false, sendMode: 'enter', autoText: true, titleChat: true,
+  theme: 'auto', fx: true, fs: 16, h12: false, sendMode: 'enter', autoText: true, titleChat: true,
   fxSend: true, fxDel: true, fxMenu: true, fxBlur: true, fxPanel: true, fxChat: true, fxMedia: true, autoGif: true,
   volume: 5, notify: false, stkSuggest: true,
   n_direct: true, n_group: true, n_channel: true, pv_direct: true, pv_group: true, pv_channel: true,

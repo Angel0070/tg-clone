@@ -11,6 +11,7 @@ import EmojiPicker from './EmojiPicker.jsx';
 import SettingsPanel from './SettingsPanel.jsx';
 import { prefs, savePref, beep, isMuted, setMute } from './prefs.js';
 import { ContactEdit } from './ContactEdit.jsx';
+import { useCalls, CallUI } from './Calls.jsx';
 
 const inFolder = (c, f) => f.id === 'all' || (f.kind === 'unread' ? c.unread > 0 : f.kind === 'direct' ? c.type === 'direct' || c.type === 'saved' : f.kind ? c.type === f.kind : (f.chatIds || []).includes(c.id));
 const isDark = () => prefs.theme === 'dark' || (prefs.theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -42,6 +43,7 @@ function Chat({ me, onMe }) {
   const sock = useRef(null); const activeRef = useRef(null); const msgsRef = useRef([]); const endRef = useRef(null); const recRef = useRef(null);
   const mediaIn = useRef(null); const fileIn = useRef(null); const audioIn = useRef(null);
   const chatsRef = useRef([]); const taRef = useRef(null);
+  const calls = useCalls({ sock });
   activeRef.current = active; msgsRef.current = msgs; chatsRef.current = chats;
   const chatClass = (id) => { const t = chatsRef.current.find((c) => c.id === id)?.type; return t === 'group' ? 'group' : t === 'channel' ? 'channel' : 'direct'; };
   useEffect(() => { if (!text && taRef.current) taRef.current.style.height = 'auto'; }, [text]);
@@ -73,7 +75,7 @@ function Chat({ me, onMe }) {
   }, [rec]);
   useEffect(() => {
     loadChats();
-    const s = io({ auth: { token: getToken() } }); sock.current = s;
+    const s = io({ auth: { token: getToken() } }); sock.current = s; calls.bind(s);
     s.on('message', (m) => {
       if (m.chat_id === activeRef.current?.id) { setMsgs((x) => [...x, m]); setFresh((f) => [...f.slice(-30), m.id]); }
       if (m.sender_id !== me.id && !isMuted(m.chat_id) && prefs['n_' + chatClass(m.chat_id)]) {
@@ -317,6 +319,9 @@ function Chat({ me, onMe }) {
               <Ava name={cur.name} url={cur.avatar} icon={chatIcon(cur) || (isChannel ? 'megaphone' : null)} online={!isGroup && presence[cur.peer_id]?.online} />
               <div className="hname"><div className="nm">{cur.name}</div><div className={'sub' + (typing || presence[cur.peer_id]?.online ? ' live' : '')}>{status}</div></div>
               <span className="grow" />
+              {cur.type === 'direct' && !cur.blocked && <>
+                <button className="ib" title="Видеозвонок" onClick={(e) => { e.stopPropagation(); calls.startCall(cur, true); }}><Icon n="video" /></button>
+                <button className="ib" title="Позвонить" onClick={(e) => { e.stopPropagation(); calls.startCall(cur, false); }}><Icon n="phone" /></button></>}
               <button className="ib" title="Поиск" onClick={(e) => { e.stopPropagation(); setMsearch({ q: '', res: [] }); }}><Icon n="search" /></button>
               <div className="relw">
                 <button className="ib" title="Ещё" onClick={tog('kebab')}><Icon n="more" /></button>
@@ -364,7 +369,7 @@ function Chat({ me, onMe }) {
                   {isGroup && !own && <div className="who">{m.sender_name}</div>}
                   {m.fwd && <div className="fwdl"><Icon n="forward" size={14} />Переслано от <b className="who">{m.fwd}</b></div>}
                   {m.reply_to && <div className="quote"><b>{m.reply_name || ''}</b><div>{m.reply_name ? m.reply_text : 'Сообщение удалено'}</div></div>}
-                  <Body m={m} onView={setViewer} auto={{ photo: prefs['ap_' + cls0], video: prefs['av_' + cls0], gif: prefs.autoGif }} />
+                  <Body m={m} meId={me.id} onView={setViewer} auto={{ photo: prefs['ap_' + cls0], video: prefs['av_' + cls0], gif: prefs.autoGif }} />
                   {(() => {
                     const timeEl = <span className={'time' + (own && cur.type === 'direct' && read ? ' read' : '')}>{isChannel && <span className="views"><Icon n="eye" size={14} />{m.views || 0}</span>}{m.edited ? 'изм. ' : ''}{hm(m.created_at)}{own && cur.type === 'direct' && <Icon n={read ? 'dcheck' : 'check'} size={15} />}</span>;
                     return m.reactions?.length ? <>{timeEl}<div className="reacts">{m.reactions.map((r) => (
@@ -486,6 +491,7 @@ function Chat({ me, onMe }) {
             {!cq.trim() && !chats.some((c) => c.type === 'direct') && <div className="sub">Пока нет контактов. Найдите человека через поиск.</div>}</div>
         </div></div>)}
       {modal === 'edit' && <EditProfile me={me} onSave={onMe} onClose={() => setModal(null)} />}
+      <CallUI c={calls} />
       {side === 'contact' && cur?.type === 'direct' && <ContactEdit chat={cur} muted={muted} onToggleMute={() => { setMute(cur.id, muted ? 0 : Infinity); bump(); }} onClose={() => setSide(null)} onSaved={loadChats} onDelete={() => leave('Удалить контакт')} />}
       {info && cur && <Info chat={cur} status={status} meId={me.id} muted={muted} onMute={() => { setMute(cur.id, muted ? 0 : Infinity); bump(); }} onClose={() => setInfo(false)} onView={setViewer} onOpenUser={(u) => { setInfo(false); openUser(u); }} />}
       {viewer && (

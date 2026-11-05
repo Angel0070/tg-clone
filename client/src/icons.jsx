@@ -81,3 +81,12 @@ Object.assign(ICONS, {
   info: <><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></>,
   cake: <path d="M4 21h16M5 21v-7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v7M12 12V8M12 5h.01M8 12V9.500M16 12V9.500" />,
 });
+Object.assign(ICONS, {
+  video: <><path d="M23 7l-7 5 7 5V7z" /><rect x="1" y="5" width="15" height="14" rx="2" /></>,
+  videooff: <><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.700 0H14a2 2 0 0 1 2 2v3.300l1 1L23 7v10" /><path d="M1 1l22 22" /></>,
+  micoff: <><path d="M1 1l22 22M9 9v3a3 3 0 0 0 5.100 2.100M15 9.300V4a3 3 0 0 0-5.900-.7" /><path d="M17 16.900A7 7 0 0 1 5 12v-2M19 10v2a7 7 0 0 1-.1 1.200M12 19v4M8 23h8" /></>,
+  screen: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+  endcall: <g transform="rotate(135 12 12)">{ICONS.phone}</g>,
+  maximize: <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3" />,
+  minimize: <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />,
+});

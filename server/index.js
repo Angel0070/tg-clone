@@ -180,7 +180,7 @@ app.get('/api/chats', auth, (req, res) => {
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS members_count,
       (SELECT MIN(last_read) FROM members WHERE chat_id=c.id AND user_id!=?) AS peer_read,
       (SELECT COUNT(*) FROM messages WHERE chat_id=c.id AND sender_id!=? AND deleted=0 AND id>m.last_read) AS unread,
-      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='audio' THEN 'Музыка' WHEN kind='sticker' THEN 'Стикер' WHEN kind='gif' THEN 'GIF' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
+      (SELECT CASE WHEN text!='' THEN text WHEN kind='voice' THEN 'Голосовое сообщение' WHEN kind='audio' THEN 'Музыка' WHEN kind='call' THEN 'Звонок' WHEN kind='sticker' THEN 'Стикер' WHEN kind='gif' THEN 'GIF' WHEN kind='image' THEN 'Фото' WHEN kind='video' THEN 'Видео' ELSE 'Файл' END FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1) AS last_text,
       COALESCE((SELECT created_at FROM messages WHERE chat_id=c.id AND deleted=0 AND ${vis} ORDER BY id DESC LIMIT 1), 0) AS last_at
     FROM chats c JOIN members m ON m.chat_id=c.id AND m.user_id=?
     LEFT JOIN users p ON c.type='direct' AND p.id=(SELECT user_id FROM members WHERE chat_id=c.id AND user_id!=? LIMIT 1)
@@ -384,6 +384,24 @@ app.delete('/api/pins/:mid', auth, (req, res) => {
   notify(m.chat_id, 'pins', { chatId: m.chat_id }); res.json({ ok: true });
 });
 
+// ---- звонки: сигналинг для WebRTC (сами аудио/видео идут напрямую между браузерами) ----
+const calls = new Map(); let callSeq = 1;
+const userCall = (uid) => [...calls.values()].find((c) => c.caller === uid || c.callee === uid);
+app.get('/api/ice', auth, (req, res) => {
+  const servers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (process.env.TURN_URL) servers.push({ urls: process.env.TURN_URL, username: process.env.TURN_USER, credential: process.env.TURN_PASS });
+  res.json(servers);
+});
+const endCall = (call, status) => {
+  if (!calls.delete(call.id)) return;
+  clearTimeout(call.timer);
+  const duration = call.startedAt ? Math.round((Date.now() - call.startedAt) / 1000) : 0;
+  const id = db.prepare('INSERT INTO messages(chat_id,sender_id,text,created_at,kind,file_name,file_url,duration) VALUES(?,?,?,?,?,?,?,?)')
+    .run(call.chatId, call.caller, '', Date.now(), 'call', status, call.video ? 'video' : 'audio', duration).lastInsertRowid;
+  notify(call.chatId, 'message', getMsg(id));
+  for (const u of [call.caller, call.callee]) io.to('user:' + u).emit('call:ended', { id: call.id, status, duration });
+};
+
 // --- Реалтайм ---
 io.use((s, next) => {
   try { const d = jwt.verify(s.handshake.auth.token, SECRET); if (d.sid && !db.prepare('SELECT 1 FROM sessions WHERE id=?').get(d.sid)) throw new Error('revoked'); s.uid = d.id; s.sid = d.sid; next(); } catch { next(new Error('auth')); }
@@ -394,6 +412,7 @@ io.on('connection', (s) => {
   online.set(s.uid, (online.get(s.uid) || 0) + 1);
   if (online.get(s.uid) === 1 && seenOk(s.uid)) io.emit('presence', { userId: s.uid, online: true });
   s.on('disconnect', () => {
+    for (const c of [...calls.values()]) if (c.callerSock === s.id || c.calleeSock === s.id) endCall(c, c.startedAt ? 'ok' : 'cancelled');
     const n = (online.get(s.uid) || 1) - 1;
     if (n > 0) return online.set(s.uid, n);
     online.delete(s.uid);
@@ -476,6 +495,38 @@ io.on('connection', (s) => {
         .run(chatId, s.uid, m.text, Date.now(), m.kind, m.file_url, m.file_name, m.file_size, m.duration, m.waveform, from).lastInsertRowid;
       notify(chatId, 'message', getMsg(nid));
     }
+  });
+  s.on('call:invite', ({ chatId, video }) => {
+    const c = db.prepare('SELECT type FROM chats WHERE id=?').get(chatId);
+    if (!c || c.type !== 'direct' || !isMember(chatId, s.uid)) return s.emit('call:fail', 'Звонки работают только в личных чатах');
+    const peer = db.prepare('SELECT user_id FROM members WHERE chat_id=? AND user_id!=?').get(chatId, s.uid)?.user_id;
+    if (!peer) return s.emit('call:fail', 'Звонок невозможен');
+    if (db.prepare('SELECT 1 FROM blocks WHERE (user_id=? AND blocked_id=?) OR (user_id=? AND blocked_id=?)').get(s.uid, peer, peer, s.uid)) return s.emit('call:fail', 'Звонок невозможен: пользователь заблокирован');
+    if (userCall(s.uid)) return s.emit('call:fail', 'Вы уже в звонке');
+    if (userCall(peer)) return s.emit('call:fail', 'Пользователь занят');
+    if (!online.has(peer)) return s.emit('call:fail', 'Пользователь не в сети');
+    const call = { id: callSeq++, chatId, caller: s.uid, callee: peer, video: !!video, callerSock: s.id, calleeSock: null, startedAt: 0 };
+    call.timer = setTimeout(() => endCall(call, 'missed'), 45000);
+    calls.set(call.id, call);
+    io.to('user:' + peer).emit('call:incoming', { id: call.id, chatId, video: call.video, from: db.prepare('SELECT id,name,avatar FROM users WHERE id=?').get(s.uid) });
+    s.emit('call:ringing', { id: call.id });
+  });
+  s.on('call:accept', ({ id }) => {
+    const call = calls.get(id);
+    if (!call || call.callee !== s.uid || call.startedAt) return;
+    clearTimeout(call.timer); call.startedAt = Date.now(); call.calleeSock = s.id;
+    s.to('user:' + s.uid).emit('call:taken', { id });
+    io.to(call.callerSock).emit('call:accepted', { id }); s.emit('call:accepted', { id });
+  });
+  s.on('call:decline', ({ id }) => { const call = calls.get(id); if (call && call.callee === s.uid && !call.startedAt) endCall(call, 'declined'); });
+  s.on('call:end', ({ id }) => {
+    const call = calls.get(id);
+    if (call && (call.caller === s.uid || call.callee === s.uid)) endCall(call, call.startedAt ? 'ok' : call.caller === s.uid ? 'cancelled' : 'declined');
+  });
+  s.on('call:signal', ({ id, data }) => {
+    const call = calls.get(id);
+    if (!call || !call.startedAt || (call.caller !== s.uid && call.callee !== s.uid)) return;
+    io.to(s.uid === call.caller ? call.calleeSock : call.callerSock).emit('call:signal', { id, data });
   });
   s.on('typing', ({ chatId }) => {
     if (!isMember(chatId, s.uid)) return;

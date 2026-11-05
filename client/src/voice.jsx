@@ -28,12 +28,21 @@ export function Voice({ m }) {
     </div>);
 }
 
-export function Body({ m, onView, auto = { photo: true, video: true, gif: true } }) {
+const CALL_LABEL = (m, mine) => {
+  const v = m.file_url === 'video', st = m.file_name;
+  if (st === 'ok') return mine ? (v ? 'Исходящий видеозвонок' : 'Исходящий звонок') : (v ? 'Входящий видеозвонок' : 'Входящий звонок');
+  if (st === 'declined') return mine ? 'Звонок отклонён' : 'Отклонённый звонок';
+  if (st === 'cancelled') return mine ? 'Отменённый звонок' : 'Пропущенный звонок';
+  return mine ? 'Нет ответа' : 'Пропущенный звонок';
+};
+
+export function Body({ m, meId, onView, auto = { photo: true, video: true, gif: true } }) {
   const stop = (e) => e.stopPropagation();
   const [load, setLoad] = useState(false);
   const dl = (ico, label) => <button className="dl" onClick={(e) => { stop(e); setLoad(true); }}><Icon n={ico} size={24} /><span><b>{label}</b><small>{size(m.file_size)}</small><small>Нажмите, чтобы загрузить</small></span></button>;
   return (<>
     {m.kind === 'voice' && <Voice m={m} />}
+    {m.kind === 'call' && <div className="callmsg"><span className={'cico' + (m.file_name !== 'ok' ? ' bad' : '')}><Icon n={m.file_url === 'video' ? 'video' : 'phone'} size={20} /></span><div><b>{CALL_LABEL(m, m.sender_id === meId)}</b>{m.file_name === 'ok' && <small>{fmt(m.duration)}</small>}</div></div>}
     {m.kind === 'sticker' && <img className="stk-img" src={m.file_url} alt="" draggable="false" />}
     {m.kind === 'gif' && <video className="pic" src={m.file_url} autoPlay={auto.gif} controls={!auto.gif} loop muted playsInline onClick={stop} />}
     {m.kind === 'audio' && <div className="music" onClick={stop}><span className="fi blue"><Icon n="music" size={22} /></span><div><b>{m.file_name}</b><audio controls preload="metadata" src={m.file_url} /></div></div>}
